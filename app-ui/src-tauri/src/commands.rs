@@ -55,3 +55,18 @@ pub fn worker_shutdown(worker: State<'_, Worker>) -> Result<(), String> {
     worker.request_shutdown();
     Ok(())
 }
+
+/// **手动重启 worker**。
+///
+/// 为什么需要它：规格 §7 的自动重启只有**一次**。一次之后若还失败，界面会停在
+/// 「worker 已退出、四个按钮全灰」——这是故障态验证里发现但尚未修的第 3 个缺陷：
+/// **没有任何恢复入口**。用户把问题修好（补依赖、改 `VIDNOTE_PYTHON`）之后，
+/// 必须有一条路能重来，而不是被迫关掉整个应用。
+///
+/// 与 `worker_shutdown` 的区别：那个是「体面地结束」，这个是「不管怎样重来一遍」。
+/// 它会把自动重启的计数与 fatal 标记清零（见 `Worker::restart`）。
+#[tauri::command]
+pub fn worker_restart(worker: State<'_, Worker>) -> Result<(), String> {
+    worker.restart();
+    Ok(())
+}

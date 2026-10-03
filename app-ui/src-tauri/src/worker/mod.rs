@@ -15,10 +15,11 @@ pub mod jobobject;
 pub mod locator;
 pub mod protocol;
 
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -37,6 +38,59 @@ const PING_INTERVAL: Duration = Duration::from_secs(5);
 /// 连续多少次无 pong 判定 worker 死亡（规格 §6）
 const MISSED_PONG_LIMIT: u32 = 2;
 
+/// 崩溃后自动重启的最大次数（规格 §7：「自动重启**一次**」）。
+///
+/// 上限存在的意义不是省资源，而是**防止崩溃循环**：若 worker 每次 spawn 后立刻
+/// 因同一个原因退出（例如解释器里少了依赖），无限重启只会把日志刷满，
+/// 用户反而看不到真正的错误。超过上限就停下来、把原因摊开给用户。
+const MAX_RESTARTS: u32 = 1;
+
+/// 重启前的退避。1 秒足够让「上一次的 stderr 尾部」写完并被读到。
+const RESTART_BACKOFF: Duration = Duration::from_millis(1000);
+
+/// stderr 尾部保留的行数（规格 §7：「再失败则提示用户并展示 stderr 尾部」）。
+const STDERR_TAIL_LINES: usize = 20;
+
+/// 定长环形缓冲：满了先丢最旧的一条。
+///
+/// 抽成自由函数是为了能单测 —— 它是纯数据操作，不该因为住在 `Inner` 里就测不到。
+fn push_bounded(buf: &mut VecDeque<String>, line: &str, cap: usize) {
+    if cap == 0 {
+        return;
+    }
+    if buf.len() >= cap {
+        buf.pop_front();
+    }
+    buf.push_back(line.to_string());
+}
+
+/// 崩溃后的处置决策。
+///
+/// 抽成纯函数是为了**能被测到**：`try_recover_after_crash` 需要 `AppHandle`
+/// 才能跑（它要 emit 事件），单测里造不出来；而「什么时候该重启、什么时候该放弃」
+/// 恰恰是这段逻辑里唯一会出错的地方，不能因为它住在难测的函数里就不测。
+#[derive(Debug, PartialEq, Eq)]
+enum Recovery {
+    /// 环境级故障，不重启（规格 §8）
+    NoRestartFatal,
+    /// 自动重启第 `attempt` 次
+    Restart { attempt: u32 },
+    /// 额度用尽，交给用户手动重启
+    GiveUp { attempt: u32 },
+}
+
+fn decide_recovery(fatal: bool, used: u32) -> Recovery {
+    if fatal {
+        return Recovery::NoRestartFatal;
+    }
+    let attempt = used + 1;
+    if attempt <= MAX_RESTARTS {
+        Recovery::Restart { attempt }
+    } else {
+        Recovery::GiveUp { attempt }
+    }
+}
+
 /// 前端监听的事件通道
 pub const EVENT_CHANNEL: &str = "worker://event";
 /// 前端监听的连接状态通道
@@ -48,7 +102,11 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// 给前端的连接状态快照。字段扁平，前端不必再解嵌套。
 #[derive(Debug, Clone, Serialize)]
 pub struct StateSnapshot {
-    /// `starting` | `ready` | `failed` | `exited`
+    /// `starting` | `restarting` | `ready` | `failed` | `exited`
+    ///
+    /// `restarting` 是自动重启的中间态：进程已不在、但已经在重启的路上。
+    /// **不要合并进 `starting`** —— 两者对用户的含义不同（一个是从没起来过，
+    /// 一个是起来过又死了正在救），合并会让「到底出过事没有」这个问题失去答案。
     pub state: String,
     pub detail: String,
     pub server_version: Option<String>,
@@ -59,6 +117,13 @@ pub struct StateSnapshot {
     pub alive: bool,
     /// 已重启次数（规格 §7：自动重启一次）
     pub restart_count: u32,
+    /// 调度器状态。**由 `ready` / `pipeline_state` 事件累积**，不额外发命令去问。
+    ///
+    /// 前端 `App.tsx` 早就在读 `snapshot.pipeline_state`，而 Rust 侧一直没这个字段
+    /// （前端 `types.ts` 也声明了它）—— 属于三端漂移，冷启动时前端只能显示默认值
+    /// 直到下一个 `pipeline_state` 事件到达。规格 §4 的 `ready` 事件本来就带
+    /// `pipeline_state`，所以这里补上是「按已有契约实现」，不是新增契约。
+    pub pipeline_state: Option<String>,
 }
 
 impl StateSnapshot {
@@ -72,6 +137,7 @@ impl StateSnapshot {
             concurrency: None,
             alive: false,
             restart_count: 0,
+            pipeline_state: None,
         }
     }
 
@@ -85,6 +151,16 @@ impl StateSnapshot {
 }
 
 struct Inner {
+    /// 指向自己的弱引用。
+    ///
+    /// **为什么要这个**：崩溃自动重启发生在 `on_worker_exit`（`&self`）里，而
+    /// `spawn_worker` 需要 `Arc<Inner>` 才能把 `Arc` 移进两条读线程。写成
+    /// `let _ = self.inner.clone()` 需要先有 `Worker`，而那里只有 `&Inner`。
+    /// 存一个 `Weak`（`Arc::new_cyclic` 建的）就解开了这个鸡生蛋问题。
+    ///
+    /// 用 `Weak` 而不是 `Arc`：self-reference 若持强引用，`Arc` 的引用计数
+    /// 永远不为 0，`Inner::drop`（里面负责 kill 子进程）就永远不会跑。
+    me: Weak<Inner>,
     app: AppHandle,
     /// 写端。None 表示 worker 未运行。
     stdin: Mutex<Option<ChildStdin>>,
@@ -105,6 +181,32 @@ struct Inner {
     shutting_down: AtomicBool,
     /// 心跳线程退出信号
     stop_heartbeat: AtomicBool,
+    /// 心跳线程的代号。
+    ///
+    /// 每次 `start_heartbeat` 自增，线程自己记住出生时的代号，代号一变就退出。
+    /// **不能用「重启时把 `stop_heartbeat` 置回 false」来复用线程**：旧线程可能正
+    /// 睡在 5 秒的 `sleep` 里，醒来时看到 `stop_heartbeat=false` + `alive=true`，
+    /// 就会以为自己是当前那一代，于是**两个心跳线程同时 ping 同一个 worker**
+    /// ——`missed_pongs` 会被数两遍，worker 提前被判死。
+    heartbeat_gen: AtomicU64,
+    /// 已自动重启次数。**这是 `restart_count` 的唯一真源**；
+    /// 快照里的那个字段在 `emit_state` 时从这里同步过去，避免两处各记一份。
+    restart_count: AtomicU32,
+    /// 是否收到过 `fatal: true` 的错误事件。
+    ///
+    /// 规格 §8 规定 `E_FFMPEG_MISSING` / `E_ENV_FATAL` 属**环境级**故障，
+    /// 「重启也没用」，故不重启。⚠️ 现状：Python 侧目前**没有任何路径会发
+    /// `fatal: true`**（`rpc.py::_on_dispatcher_event` 刻意用 `fatal=False` 发
+    /// `E_ENV_FATAL`，因为那时 worker 还活着、能继续响应命令）。
+    /// 这个分支是照规格实现的，等 Python 侧真的开始发致命错误时才有实际作用。
+    ///
+    /// 覆盖情况：**决策侧**有单测（`tests::fatal_error_suppresses_restart`）；
+    /// **置位侧**（`handle_frame` 收到 `fatal:true` 才写这个标志）没有单测——
+    /// 它需要真实 worker 发一条 fatal 事件，而现状无人发。
+    fatal: AtomicBool,
+    /// stderr 尾部（定长环形缓冲），崩溃后随状态一起摊给用户 ——
+    /// 规格 §7：「再失败则提示用户并展示 stderr 尾部」。
+    stderr_tail: Mutex<VecDeque<String>>,
     /// 绑定 worker 的 Job Object 句柄。
     ///
     /// **必须存在这里，不能是 `spawn_worker` 的局部变量。** 本作业设了
@@ -132,7 +234,11 @@ impl Worker {
     /// 创建并启动。**不阻塞**——握手是异步的，前端先渲染「启动中」，
     /// 收到 `ready` 后再覆写（规格 §4.2 的同一思路）。
     pub fn start(app: AppHandle) -> Self {
-        let inner = Arc::new(Inner {
+        // `new_cyclic` 让 `Inner` 在构造期就拿到自身的 `Weak`（见 `Inner::me`）。
+        // ⚠️ 闭包里的 `me` 是 `&Weak<Inner>`，**不要 `upgrade()`** —— 此时 `Arc`
+        // 还没构造完，`upgrade()` 必然返回 `None`。
+        let inner = Arc::new_cyclic(|me| Inner {
+            me: me.clone(),
             app,
             stdin: Mutex::new(None),
             child: Mutex::new(None),
@@ -144,6 +250,10 @@ impl Worker {
             snapshot: Mutex::new(StateSnapshot::starting()),
             shutting_down: AtomicBool::new(false),
             stop_heartbeat: AtomicBool::new(false),
+            heartbeat_gen: AtomicU64::new(0),
+            restart_count: AtomicU32::new(0),
+            fatal: AtomicBool::new(false),
+            stderr_tail: Mutex::new(VecDeque::with_capacity(STDERR_TAIL_LINES)),
             job: Mutex::new(None),
         });
 
@@ -151,6 +261,28 @@ impl Worker {
         worker.spawn_worker();
         worker.start_heartbeat();
         worker
+    }
+
+    /// 用户手动重启 worker（`worker_restart` 命令）。
+    ///
+    /// 存在的理由：自动重启只有**一次**（规格 §7）。一次之后若还失败，界面会停在
+    /// 「worker 已退出、所有按钮全灰」——**那正是故障态验证里发现的第 3 个缺陷：
+    /// 没有任何恢复入口**。用户修好问题（例如此前缺的依赖补上了）之后，
+    /// 必须有一条路能重来，而不是被迫关掉整个应用。
+    ///
+    /// 手动重启会把自动重启的计数与 fatal 标记**清零**——那是一次全新的尝试，
+    /// 沿用上一轮的「已用掉一次」只会让用户点了没反应。
+    pub fn restart(&self) {
+        // **无条件收掉上一代**：崩溃路径上 `child` 里还留着那个已退出的 `Child`，
+        // 「心跳判死但进程还活着」那条路径上它更是真的还在跑（且占着 GPU）。
+        // 漏了这一步就会出现两个 worker 同时读写同一个 `state.db`。
+        self.inner.reap_stale_child();
+        self.inner.shutting_down.store(false, Ordering::SeqCst);
+        self.inner.fatal.store(false, Ordering::SeqCst);
+        self.inner.restart_count.store(0, Ordering::SeqCst);
+        self.inner.emit_log("info", "supervisor", "用户请求重启 worker");
+        self.spawn_worker();
+        self.start_heartbeat();
     }
 
     /// 当前状态快照。前端首次挂载时主动拉一次，避免错过启动期的事件。
@@ -275,12 +407,25 @@ impl Worker {
         self.inner.expected_seq.store(1, Ordering::SeqCst);
         *self.inner.last_pong.lock().unwrap() = Instant::now();
         self.inner.missed_pongs.store(0, Ordering::SeqCst);
+        // 新一代进程，stderr 尾部重新累积 —— 上一代的尾部已经在退出时读走并进日志了。
+        self.inner.stderr_tail.lock().unwrap().clear();
 
         {
+            let restarts = self.inner.restart_count.load(Ordering::SeqCst);
             let mut snap = self.inner.snapshot.lock().unwrap();
             snap.state = "starting".into();
-            snap.detail = format!("已启动：{}", target.source);
+            snap.detail = if restarts > 0 {
+                format!("第 {restarts} 次自动重启中：{}", target.source)
+            } else {
+                format!("已启动：{}", target.source)
+            };
             snap.alive = true;
+            // 新进程还没握手，上一代的 GPU/并发结论一律作废 —— 留着会让用户以为
+            // 「重启后还是 GPU 可用」，而新进程可能根本起不来。
+            snap.server_version = None;
+            snap.gpu_usable = None;
+            snap.gpu_verified = None;
+            snap.concurrency = None;
         }
         self.inner.emit_state();
 
@@ -319,6 +464,8 @@ impl Worker {
                                 continue;
                             }
                             eprintln!("[py] {l}");
+                            // 留一份尾部：崩溃时用户第一眼要看的就是 Python 最后的遗言。
+                            inner.push_stderr_tail(&l);
                             // 同时转给前端日志区，`source` 让前端区分来源
                             inner.emit_log("debug", "stderr", l);
                         }
@@ -337,9 +484,14 @@ impl Worker {
     // ----------------------------------------------------------- 事件分发
 
     fn start_heartbeat(&self) {
+        // 每一代心跳线程领一个代号；代号一变就说明自己被取代了（见 `Inner::heartbeat_gen`）。
+        let gen = self.inner.heartbeat_gen.fetch_add(1, Ordering::SeqCst) + 1;
         let inner = self.inner.clone();
         std::thread::spawn(move || loop {
             std::thread::sleep(PING_INTERVAL);
+            if inner.heartbeat_gen.load(Ordering::SeqCst) != gen {
+                break; // 已被新一代心跳取代（例如刚发生过自动重启）
+            }
             if inner.stop_heartbeat.load(Ordering::SeqCst) || !inner.alive.load(Ordering::SeqCst) {
                 break;
             }
@@ -352,9 +504,17 @@ impl Worker {
                     inner.alive.store(false, Ordering::SeqCst);
                     // 必须经由统一发射口。这里原来直接 `app.emit(STATE_CHANNEL, ..)`，
                     // 绕开了日志，于是「心跳判死」这条最重要的异常路径在终端里查不到。
+                    //
+                    // ⚠️ **本分支刻意不杀进程、不触发自动重启**，只如实上报。
+                    // 理由：`docs/IPC协议规格.md` §9 末尾与 `PLAN §11.7` 都记着一条
+                    // 未验证项 —— **转写进行中主循环是否还能回 pong 没人测过**。
+                    // 若长转写阻塞了主循环，心跳会「误判死亡」；此时若自动重启，
+                    // 就会把一条正在正常转写的任务连同 GPU 上下文一起杀掉，
+                    // 那是比「多显示一条错误」严重得多的回归。
+                    // 等 §11.7 那条测清楚了（转写中 pong 往返实测），再决定要不要在这里动手。
                     *inner.snapshot.lock().unwrap() = StateSnapshot {
                         state: "exited".into(),
-                        detail: format!("心跳中断：连续 {missed} 次未收到 pong"),
+                        detail: format!("心跳中断：连续 {missed} 次未收到 pong（见日志区）"),
                         alive: false,
                         ..StateSnapshot::starting()
                     };
@@ -414,6 +574,9 @@ impl Inner {
                 snap.gpu_usable = ev.data["gpu_usable"].as_bool();
                 snap.gpu_verified = ev.data["gpu_verified"].as_bool();
                 snap.concurrency = Some(ev.data["concurrency"].clone());
+                // 规格 §4：`ready` 事件本身带 `pipeline_state`，顺手记下 ——
+                // 前端挂载时拉快照就能拿到调度器状态，不必等下一次跃迁。
+                snap.pipeline_state = ev.data["pipeline_state"].as_str().map(str::to_string);
                 drop(snap);
                 self.emit_state();
             }
@@ -426,6 +589,22 @@ impl Inner {
                 }
                 drop(snap);
                 self.emit_state();
+            }
+            // 调度器状态跃迁（规格 §4）。只更新快照，不写库、不改状态机。
+            "pipeline_state" => {
+                if let Some(s) = ev.data["state"].as_str() {
+                    self.snapshot.lock().unwrap().pipeline_state = Some(s.to_string());
+                    self.emit_state();
+                }
+            }
+            // 规格 §8：`fatal: true` 表示「重启也没用」的环境级故障，记下来，
+            // 崩溃恢复时据此**不重启**（见 `Inner::fatal`）。事件本身照常转发给前端。
+            "error" => {
+                if ev.data["fatal"].as_bool() == Some(true) {
+                    self.fatal.store(true, Ordering::SeqCst);
+                    let code = ev.data["code"].as_str().unwrap_or("E_?");
+                    eprintln!("[worker] 收到致命错误 {code}，后续崩溃将不再自动重启");
+                }
             }
             "bye" => {
                 self.shutting_down.store(true, Ordering::SeqCst);
@@ -471,7 +650,14 @@ impl Inner {
     ///
     /// 调用约定：调用方须已释放 `snapshot` 的锁（本函数内部会再取一次）。
     fn emit_state(&self) {
-        let snap = self.snapshot.lock().unwrap().clone();
+        let snap = {
+            let mut guard = self.snapshot.lock().unwrap();
+            // 快照里的 `restart_count` 由这里从原子量同步 —— 让**原子量成为唯一真源**。
+            // 否则 `set_state` / 心跳线程那些「整份替换快照」的路径会把计数悄悄清零，
+            // 现象是「明明重启过一次，界面显示 restart=0」。
+            guard.restart_count = self.restart_count.load(Ordering::SeqCst);
+            guard.clone()
+        };
         // 状态跃迁必须同时落 stderr。否则失败在终端里**完全不可见**——
         // 例如 `locate()` / spawn 失败只写进 UI 快照，而那一刻前端往往还没挂载，
         // 现象就是「窗口开了、一句话没有、Python 进程也不在」，无从下手。
@@ -499,8 +685,14 @@ impl Inner {
     ///
     /// 实测（2026-10-03 崩溃注入）：不加这一条时，杀了 worker 之后日志区最后一行
     /// 仍是崩溃前的 `环境验证：GPU 可用`，看不出已经出事。
+    ///
+    /// 本函数同时是**崩溃自动重启**的触发点（规格 §7）。
     fn on_worker_exit(&self) {
-        let already_dead = !self.alive.swap(false, Ordering::SeqCst);
+        // 这次 swap 的返回值告诉我们「心跳线程是否已经先一步判过死」——
+        // 只用来决定要不要再报一条「意外退出」，不影响是否重启：
+        // 旧版本在这里直接 `return`，导致「心跳判死 → 进程随后真的退出」这条路径
+        // 永远不会重启。两条路径描述的是同一次死亡，不该各有各的命运。
+        let was_alive = self.alive.swap(false, Ordering::SeqCst);
         self.stop_heartbeat.store(true, Ordering::SeqCst);
         *self.stdin.lock().unwrap() = None;
 
@@ -524,20 +716,139 @@ impl Inner {
             return;
         }
 
-        if already_dead {
-            return; // 心跳线程已报过，不重复
+        if was_alive {
+            self.emit_log(
+                "error",
+                "supervisor",
+                format!("worker 意外退出（code={code:?}）"),
+            );
+        } else {
+            // 心跳线程已经报过原因，这里不再重复一条 error，只补上「进程确实结束了」。
+            self.emit_log(
+                "info",
+                "supervisor",
+                format!("worker 进程已确认结束（code={code:?}），进入崩溃恢复判定"),
+            );
         }
 
-        let detail = format!(
-            "worker 意外退出（code={code:?}）。规格 §7 要求自动重启一次；当前版本先如实上报，未自动重启。"
-        );
-        self.emit_log("error", "supervisor", detail.clone());
-        let mut snap = self.snapshot.lock().unwrap();
-        snap.state = "exited".into();
-        snap.detail = detail;
-        snap.alive = false;
-        drop(snap);
+        self.try_recover_after_crash(code);
+    }
+
+    /// 整份替换快照并广播。与 `Worker::set_state` 同义，只是给 `impl Inner` 用
+    /// ——崩溃恢复跑在 `Inner` 的方法里，那里拿不到 `Worker`（`Worker` 只是
+    /// `Arc<Inner>` 的薄包装，而这一步不需要新建一个）。
+    fn set_snapshot(&self, snap: StateSnapshot) {
+        *self.snapshot.lock().unwrap() = snap;
         self.emit_state();
+    }
+
+    /// 崩溃恢复判定（规格 §7：自动重启一次；再失败则提示用户并展示 stderr 尾部）。
+    fn try_recover_after_crash(&self, code: Option<i32>) {
+        let fatal = self.fatal.load(Ordering::SeqCst);
+        let used = self.restart_count.load(Ordering::SeqCst);
+
+        match decide_recovery(fatal, used) {
+            // ① 环境级故障 —— 重启也没用（规格 §8）。把原因和 stderr 尾部摊开。
+            Recovery::NoRestartFatal => {
+                let detail = format!(
+                    "worker 因环境级故障退出（code={code:?}），已按规格 §8 不自动重启。\
+                     修复环境后可用工具栏的「重启 worker」重试。{}",
+                    self.tail_hint()
+                );
+                self.emit_log("error", "supervisor", detail.clone());
+                self.set_snapshot(StateSnapshot {
+                    state: "exited".into(),
+                    detail,
+                    alive: false,
+                    ..StateSnapshot::starting()
+                });
+            }
+
+            // ② 还有额度 —— 退避后自动重启。
+            Recovery::Restart { attempt } => {
+                self.restart_count.store(attempt, Ordering::SeqCst);
+                let detail =
+                    format!("worker 意外退出（code={code:?}），正在自动重启（第 {attempt}/{MAX_RESTARTS} 次）");
+                self.emit_log("warning", "supervisor", detail.clone());
+                self.set_snapshot(StateSnapshot {
+                    state: "restarting".into(),
+                    detail,
+                    alive: false,
+                    ..StateSnapshot::starting()
+                });
+
+                // 在独立线程里退避后重启：本函数跑在 stdout 读线程上，
+                // 在这里直接 sleep 会让该线程多活 1 秒（虽无害，但没必要）。
+                match self.me.upgrade() {
+                    Some(me) => {
+                        std::thread::spawn(move || {
+                            std::thread::sleep(RESTART_BACKOFF);
+                            // 退避期间用户可能已经关了应用，别把 worker 再拉起来。
+                            if me.shutting_down.load(Ordering::SeqCst) {
+                                return;
+                            }
+                            let w = Worker { inner: me };
+                            w.spawn_worker();
+                            w.start_heartbeat();
+                        });
+                    }
+                    None => eprintln!("[worker] 监督器已销毁，放弃自动重启"),
+                }
+            }
+
+            // ③ 额度用尽 —— 停下来，把原因摊开，并明确告诉用户还有手动这条路。
+            //    这一条对应故障态验证里发现的第 3 个缺陷（「没有任何恢复入口」）。
+            Recovery::GiveUp { attempt } => {
+                self.restart_count.store(attempt, Ordering::SeqCst);
+                let detail = format!(
+                    "worker 连续 {attempt} 次退出（code={code:?}），已放弃自动重启。\
+                     排查后可用工具栏的「重启 worker」重试。{}",
+                    self.tail_hint()
+                );
+                self.emit_log("error", "supervisor", detail.clone());
+                self.set_snapshot(StateSnapshot {
+                    state: "exited".into(),
+                    detail,
+                    alive: false,
+                    ..StateSnapshot::starting()
+                });
+            }
+        }
+    }
+
+    /// 把 stderr 尾部并成一句可读的提示（为空则返回空串）。
+    fn tail_hint(&self) -> String {
+        let tail = self.stderr_tail.lock().unwrap();
+        if tail.is_empty() {
+            return String::new();
+        }
+        format!("\n--- Python stderr 尾部（{} 行）---\n{}", tail.len(), tail.iter().cloned().collect::<Vec<_>>().join("\n"))
+    }
+
+    /// stderr 尾部的定长环形缓冲。
+    fn push_stderr_tail(&self, line: &str) {
+        let mut tail = self.stderr_tail.lock().unwrap();
+        push_bounded(&mut tail, line, STDERR_TAIL_LINES);
+    }
+
+    /// 收掉上一代可能还留着的子进程句柄（手动重启前调用）。
+    ///
+    /// 「心跳判死但进程没死」（长转写阻塞主循环，见 `start_heartbeat` 里的说明）
+    /// 会走到这里：用户点「重启 worker」时，旧进程必须真的被清掉，
+    /// 否则会同时存在两个 worker，两个都在读写同一个 `state.db`。
+    fn reap_stale_child(&self) {
+        if let Some(mut child) = self.child.lock().unwrap().take() {
+            // 只有**真的还在跑**才需要杀、才值得报。崩溃路径上这个 `Child` 已经被
+            // `wait()` 收过了，那时 `kill()` 只会返回「进程已结束」的错误，
+            // 报成「已终止残留进程」是在撒谎。
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = child.kill();
+                self.emit_log("warning", "supervisor", "已终止上一代残留的 worker 进程");
+            }
+            let _ = child.wait();
+        }
+        *self.stdin.lock().unwrap() = None;
+        self.stop_heartbeat.store(true, Ordering::SeqCst);
     }
 
     /// 心跳线程用的无锁快路径（`Worker::send` 的薄包装）。
@@ -594,4 +905,74 @@ fn spawn_child(target: &locator::WorkerTarget) -> Result<Child, String> {
             target.cwd.display()
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_crash_triggers_exactly_one_restart() {
+        // 规格 §7：崩溃后自动重启**一次**
+        assert_eq!(
+            decide_recovery(false, 0),
+            Recovery::Restart { attempt: 1 }
+        );
+    }
+
+    #[test]
+    fn second_crash_gives_up_and_points_user_at_manual_restart() {
+        // 已经用掉那一次，再来就是放弃 —— 不能让界面停在「按钮全灰、无路可走」
+        assert_eq!(decide_recovery(false, 1), Recovery::GiveUp { attempt: 2 });
+        assert_eq!(decide_recovery(false, 7), Recovery::GiveUp { attempt: 8 });
+    }
+
+    #[test]
+    fn fatal_error_suppresses_restart() {
+        // 规格 §8：环境级故障「重启也没用」，一次都不该重启
+        assert_eq!(decide_recovery(true, 0), Recovery::NoRestartFatal);
+    }
+
+    #[test]
+    fn stderr_tail_keeps_only_the_newest_lines() {
+        let mut buf = VecDeque::new();
+        for i in 1..=25 {
+            push_bounded(&mut buf, &format!("line-{i}"), 20);
+        }
+        assert_eq!(buf.len(), 20, "必须定长");
+        assert_eq!(buf.front().unwrap(), "line-6", "丢的是最旧的");
+        assert_eq!(buf.back().unwrap(), "line-25", "留的是最新的");
+    }
+
+    #[test]
+    fn stderr_tail_with_zero_capacity_stays_empty() {
+        // 边界：容量为 0 时不能变成「永远保留 1 条」
+        let mut buf = VecDeque::new();
+        push_bounded(&mut buf, "x", 0);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn restart_clears_stale_gpu_conclusions_from_snapshot() {
+        // 重启必须把上一代的 GPU/并发结论清掉：新进程可能根本起不来，
+        // 留着旧结论会让界面显示「GPU 可用」而实际没有 worker。
+        // 这里锁住的是 `starting()` 的默认值 —— `spawn_worker` 依赖它来重置。
+        let s = StateSnapshot::starting();
+        assert_eq!(s.gpu_usable, None);
+        assert_eq!(s.gpu_verified, None);
+        assert!(s.concurrency.is_none());
+        assert_eq!(s.state, "starting");
+        assert!(!s.alive);
+    }
+
+    #[test]
+    fn snapshot_serializes_pipeline_state_for_frontend() {
+        // 前端 `App.tsx` 读 `snapshot.pipeline_state`，`types.ts` 也声明了它。
+        // Rust 侧曾长期没有这个字段（三端漂移），这里锁住它必须出现在 JSON 里。
+        let mut s = StateSnapshot::starting();
+        s.pipeline_state = Some("running".into());
+        let v: Value = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["pipeline_state"], json!("running"));
+        assert!(v.get("restart_count").is_some());
+    }
 }

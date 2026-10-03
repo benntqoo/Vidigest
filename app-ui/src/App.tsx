@@ -177,6 +177,12 @@ function App() {
 
   const busy = worker?.state === "ready";
 
+  // worker 不在了（起不来或崩了）才需要这个按钮。
+  // `restarting` / `starting` 不给 —— 那两种状态下重启已经在路上了，
+  // 按钮会诱使用户连点，反而把正在起来的进程又杀一遍。
+  const canRestart =
+    worker != null && (worker.state === "failed" || worker.state === "exited");
+
   return (
     <div className="app">
       <header className="toolbar">
@@ -217,6 +223,21 @@ function App() {
         >
           继续
         </button>
+
+        {/*
+          恢复入口：worker 起不来 / 崩了之后，上面四个按钮全是灰的，
+          这里若也没有，用户唯一的选择就是关掉整个应用（故障态验证发现的第 3 个缺陷）。
+          样式用 danger 是为了让它在一排灰按钮里显出来 —— 此刻它是唯一能做的事。
+        */}
+        {canRestart && (
+          <button
+            className="danger"
+            onClick={() => run("重启 worker", api.restartWorker())}
+            title={`${worker?.detail ?? ""}\n\n不用关闭应用，直接重来一遍`}
+          >
+            重启 worker
+          </button>
+        )}
 
         <span className="spacer" />
 

@@ -40,6 +40,16 @@ export function shutdownWorker(): Promise<void> {
   return invoke<void>("worker_shutdown");
 }
 
+/**
+ * 手动重启 worker。
+ *
+ * 自动重启只有一次（规格 §7）；用尽之后界面会停在「worker 已退出、按钮全灰」。
+ * 这个调用是那时**唯一的恢复入口**（故障态验证发现的第 3 个缺陷）。
+ */
+export function restartWorker(): Promise<void> {
+  return invoke<void>("worker_restart");
+}
+
 // ---------------------------------------------------------------- 业务语义
 
 /** 批量入队。支持一次粘贴多条（含抖音分享文案，Python 侧负责抽 URL）。 */

@@ -32,6 +32,7 @@ pub fn run() {
             commands::worker_state,
             commands::worker_send,
             commands::worker_shutdown,
+            commands::worker_restart,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

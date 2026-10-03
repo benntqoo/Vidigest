@@ -21,8 +21,14 @@ export interface WorkerEvent {
 
 /** Rust 侧维护的连接状态快照（`worker/mod.rs::StateSnapshot`） */
 export interface WorkerState {
-  /** starting | ready | failed | exited */
-  state: "starting" | "ready" | "failed" | "exited";
+  /**
+   * `starting`   —— 首次启动，还没握过手
+   * `restarting` —— 崩溃后正在自动重启（**已出过一次事**，与 `starting` 不是一回事）
+   * `ready`      —— 握手完成，可下命令
+   * `failed`     —— 起不来（定位解释器失败 / spawn 失败 / 握手发送失败）
+   * `exited`     —— 曾经起过，现在不在了（正常退出或崩溃恢复失败）
+   */
+  state: "starting" | "restarting" | "ready" | "failed" | "exited";
   detail: string;
   server_version: string | null;
   gpu_usable: boolean | null;
@@ -33,6 +39,7 @@ export interface WorkerState {
   gpu_verified: boolean | null;
   concurrency: Concurrency | null;
   alive: boolean;
+  /** 已自动重启次数。Rust 侧以原子量为唯一真源，其余是它的投影 */
   restart_count: number;
   /**
    * 调度器状态。Rust 侧从 `ready` / `pipeline_state` 事件累积而来，
