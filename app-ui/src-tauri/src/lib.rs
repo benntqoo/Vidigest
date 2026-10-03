@@ -22,9 +22,16 @@ pub fn run() {
         .on_window_event(|window, event| {
             // 窗口关闭时**先请** worker 优雅退出：发 `shutdown`，Python 侧自行收尾。
             // 这里不阻塞等待——真正的兜底在下面 `RunEvent::Exit` 与 Job Object。
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if let Some(w) = window.app_handle().try_state::<worker::Worker>() {
-                    w.request_shutdown();
+                    if w.should_confirm_close() {
+                        // 有任务在跑：拦下来问一句。**必须 prevent_close**，
+                        // 否则窗口一关应用就退，30 s 的收尾窗口根本不存在。
+                        api.prevent_close();
+                        w.emit_close_requested();
+                    } else {
+                        w.request_shutdown();
+                    }
                 }
             }
         })
@@ -33,6 +40,8 @@ pub fn run() {
             commands::worker_send,
             commands::worker_shutdown,
             commands::worker_restart,
+            commands::worker_confirm_close,
+            commands::open_local_path,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

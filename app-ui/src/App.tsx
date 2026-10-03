@@ -18,6 +18,7 @@ import { LogPanel, type LogEntry } from "./components/LogPanel";
 import { StatusBar } from "./components/StatusBar";
 import { TaskTable } from "./components/TaskTable";
 import * as api from "./worker/client";
+import type { CloseRequest } from "./worker/client";
 import type {
   PipelineState,
   TaskSnapshot,
@@ -28,12 +29,27 @@ import type {
 /** 日志区保留的最大条数。超出后丢最旧的 —— 长跑不设上限会吃光内存。 */
 const MAX_LOGS = 500;
 
+/**
+ * 拼 `out_dir/transcript.txt`。
+ *
+ * 刻意不引 path 库、也不做归一化：`out_dir` 是 Python 侧给的 Windows 路径，
+ * 直接把反斜杠拼上去最不容易出错。这里唯一的约定（`transcript.txt` 这个名字）
+ * 来自 `app/core/pipeline.py`，改那边就要改这里。
+ */
+function transcriptPath(outDir: string): string {
+  return `${outDir.replace(/[\\/]+$/, "")}\\transcript.txt`;
+}
+
 function App() {
   const [worker, setWorker] = useState<WorkerState | null>(null);
   const [tasks, setTasks] = useState<Record<number, TaskSnapshot>>({});
   const [pipeline, setPipeline] = useState<PipelineState>("idle");
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const logSeq = useRef(0);
+  /** 非空 = 用户点了关闭、但还有任务在跑，等他选（`PLAN §7.2` 第 3 条） */
+  const [closeReq, setCloseReq] = useState<CloseRequest | null>(null);
+  /** 确认退出后 worker 还要收尾，界面停一会儿 —— 别让用户以为卡死了 */
+  const [shuttingDown, setShuttingDown] = useState(false);
 
   const pushLog = useCallback(
     (level: LogEntry["level"], msg: string, source?: string) => {
@@ -144,6 +160,15 @@ function App() {
     api.onEvent((ev) => {
       if (!disposed) handleEvent(ev);
     }).then((fn) => (disposed ? fn() : unlisteners.push(fn)));
+
+    // 关闭确认：Rust 侧已 `prevent_close`，由这里决定放不放行。
+    // **不能只在前端判断「有没有任务在跑」** —— 那需要前端自己维护一份权威状态，
+    // 而权威在 Rust（`should_confirm_close` 读的是快照）。
+    api
+      .onCloseRequested((req) => {
+        if (!disposed) setCloseReq(req);
+      })
+      .then((fn) => (disposed ? fn() : unlisteners.push(fn)));
 
     api
       .getWorkerState()
@@ -256,9 +281,62 @@ function App() {
         onOpenDir={(path) =>
           revealItemInDir(path).catch((e) => pushLog("error", `打开目录失败 ${path}：${e}`))
         }
+        onOpenTranscript={(outDir) => {
+          const p = transcriptPath(outDir);
+          // 用系统默认程序打开（.txt → 记事本）。失败时把路径打进日志 ——
+          // 「转写还没生成」和「路径拼错了」是两件事，路径在日志里能一眼分开。
+          api.openLocalPath(p).catch((e) => pushLog("error", `打开转写稿失败 ${p}：${e}`));
+        }}
       />
 
       <LogPanel entries={logs} onClear={() => setLogs([])} />
+
+      {/*
+        关闭确认（`PLAN §7.2` 第 3 条）。Rust 侧已经 `prevent_close` 了，
+        所以这里「继续运行」只是把弹窗收掉 —— 不需要再通知后端。
+      */}
+      {closeReq && !shuttingDown && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h2>还有任务在跑</h2>
+            <p>{closeReq.hint}</p>
+            <p className="modal-note">
+              流水线状态：{closeReq.pipeline_state ?? "未知"}。
+              「后台继续（最小化到托盘）」属阶段 3 待办，尚未实现 ——
+              所以此刻只有两个选择：保持窗口，或者退出。
+            </p>
+            <div className="modal-actions">
+              <button onClick={() => setCloseReq(null)}>继续运行</button>
+              <button
+                className="danger"
+                onClick={() => {
+                  setShuttingDown(true);
+                  api.confirmClose().catch((e) => {
+                    setShuttingDown(false);
+                    pushLog("error", `退出失败：${e}`);
+                  });
+                }}
+              >
+                退出并停止任务
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/*
+        收尾期间必须留个提示。Rust 侧要等 worker 真正退出才退应用（上限 30 s），
+        这段时间窗口是活的、但什么都不会发生 —— 没有这个遮罩，用户会以为程序卡死
+        而用任务管理器强杀，那恰好会截断我们正要保护的那次 `state.db` 写入。
+      */}
+      {shuttingDown && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h2>正在退出…</h2>
+            <p>已请 worker 收尾，上限 30 秒。请勿强制结束进程。</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

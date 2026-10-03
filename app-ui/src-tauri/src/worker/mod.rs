@@ -51,6 +51,13 @@ const RESTART_BACKOFF: Duration = Duration::from_millis(1000);
 /// stderr 尾部保留的行数（规格 §7：「再失败则提示用户并展示 stderr 尾部」）。
 const STDERR_TAIL_LINES: usize = 20;
 
+/// 退出时留给 worker 收尾的时间上限（规格 §7 的「优雅 shutdown，Python 侧 30s 上限」）。
+///
+/// ⚠️ 这个数字**必须**与 `app/rpc.py::_cmd_shutdown` 里的 `dispatcher.stop(timeout=30.0)`
+/// 对齐。比它小就会在 Python 还在写 `state.db` 时把应用退掉，断点续跑的正确性
+/// 依赖那次写入。
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
+
 /// 定长环形缓冲：满了先丢最旧的一条。
 ///
 /// 抽成自由函数是为了能单测 —— 它是纯数据操作，不该因为住在 `Inner` 里就测不到。
@@ -62,6 +69,20 @@ fn push_bounded(buf: &mut VecDeque<String>, line: &str, cap: usize) {
         buf.pop_front();
     }
     buf.push_back(line.to_string());
+}
+
+/// 关闭窗口前是否要先问用户（`PLAN §7.2` 第 3 条）。
+///
+/// 同样是抽出来的纯函数：`should_confirm_close` 要 `AppHandle`，测不到。
+/// 而「什么情况下该拦下关闭」正是这里唯一会错的地方 —— 拦多了用户关不掉窗口，
+/// 拦少了正在跑的任务被静默打断。
+fn needs_close_confirmation(confirmed: bool, alive: bool, pipeline_state: Option<&str>) -> bool {
+    if confirmed || !alive {
+        return false;
+    }
+    // `running` 是在推进；`paused` 是已取的任务还在跑完（`PLAN` 的暂停语义）。
+    // `idle` / `aborted` / `stopped` / 未知 都不拦 —— 没有正在进行的阶段可丢。
+    matches!(pipeline_state, Some("running") | Some("paused"))
 }
 
 /// 崩溃后的处置决策。
@@ -95,6 +116,8 @@ fn decide_recovery(fatal: bool, used: u32) -> Recovery {
 pub const EVENT_CHANNEL: &str = "worker://event";
 /// 前端监听的连接状态通道
 pub const STATE_CHANNEL: &str = "worker://state";
+/// 「用户点了关闭、但还有任务在跑」——前端据此弹确认框。
+pub const CLOSE_REQUEST_CHANNEL: &str = "worker://close-requested";
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -192,6 +215,13 @@ struct Inner {
     /// 已自动重启次数。**这是 `restart_count` 的唯一真源**；
     /// 快照里的那个字段在 `emit_state` 时从这里同步过去，避免两处各记一份。
     restart_count: AtomicU32,
+    /// 用户是否已经就「有任务在跑时关闭窗口」确认过一次。
+    ///
+    /// 存在的理由：确认之后前端会再走一次关闭，那时 `CloseRequested` **必须放行**，
+    /// 否则弹窗会无限重开（用户点「退出」→ 窗口又拦下 → 又弹一次）。
+    /// 用「一次性放行」而不是「前端自己绕过关闭流程」，是为了让窗口关闭始终
+    /// 只有 `CloseRequested` 一条路径 —— 多一条路径就多一处会忘记回收 worker 的地方。
+    close_confirmed: AtomicBool,
     /// 是否收到过 `fatal: true` 的错误事件。
     ///
     /// 规格 §8 规定 `E_FFMPEG_MISSING` / `E_ENV_FATAL` 属**环境级**故障，
@@ -253,6 +283,7 @@ impl Worker {
             heartbeat_gen: AtomicU64::new(0),
             restart_count: AtomicU32::new(0),
             fatal: AtomicBool::new(false),
+            close_confirmed: AtomicBool::new(false),
             stderr_tail: Mutex::new(VecDeque::with_capacity(STDERR_TAIL_LINES)),
             job: Mutex::new(None),
         });
@@ -321,6 +352,78 @@ impl Worker {
     pub fn request_shutdown(&self) {
         self.inner.shutting_down.store(true, Ordering::SeqCst);
         let _ = self.send("shutdown", json!({}));
+    }
+
+    // ------------------------------------------------------------ 关闭确认
+
+    /// 点关闭时要不要先问用户一句（`PLAN §7.2` 第 3 条）。
+    pub fn should_confirm_close(&self) -> bool {
+        let snap = self.inner.snapshot.lock().unwrap();
+        needs_close_confirmation(
+            self.inner.close_confirmed.load(Ordering::SeqCst),
+            snap.alive,
+            snap.pipeline_state.as_deref(),
+        )
+    }
+
+    /// 通知前端弹确认框。同时落一条 supervisor 日志：
+    /// 否则「点了 X 但窗口没关」在终端里是零线索的（与 `emit_state` 同一个理由）。
+    pub fn emit_close_requested(&self) {
+        let pipeline_state = self.inner.snapshot.lock().unwrap().pipeline_state.clone();
+        self.inner.emit_log(
+            "info",
+            "supervisor",
+            format!("关闭被拦下：流水线 {pipeline_state:?}，等待用户确认"),
+        );
+        if let Err(e) = self.inner.app.emit(
+            CLOSE_REQUEST_CHANNEL,
+            json!({
+                "pipeline_state": pipeline_state,
+                "hint": "还有任务在跑。退出会中断它们——下次启动会从断点续跑，\
+                         但当前阶段已做的工作会丢弃。",
+            }),
+        ) {
+            eprintln!("[worker] 关闭确认事件发送失败：{e}");
+        }
+    }
+
+    /// 用户在确认框里选了「退出」。
+    ///
+    /// **为什么要等**：直接退出应用会立刻触发 `RunEvent::Exit` → `force_kill()`，
+    /// 而 Python 那一刻可能正在 `dispatcher.stop()` 里把任务状态写回 `state.db`。
+    /// 断点续跑的正确性依赖那次写入 —— 这正是 `PLAN §8` 里记着的
+    /// 「优雅关闭的 30 s 窗口当前实际拿不到」的成因。
+    /// 现在改成：先请 worker 收尾，**等它真的退出（上限 `SHUTDOWN_GRACE`）**，再退应用。
+    pub fn confirm_close(&self) {
+        self.inner.close_confirmed.store(true, Ordering::SeqCst);
+        self.inner.emit_log(
+            "info",
+            "supervisor",
+            format!(
+                "用户确认退出：先请 worker 优雅收尾（上限 {} s），再退出应用",
+                SHUTDOWN_GRACE.as_secs()
+            ),
+        );
+        self.request_shutdown();
+
+        let inner = self.inner.clone();
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + SHUTDOWN_GRACE;
+            while inner.alive.load(Ordering::SeqCst) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if inner.alive.load(Ordering::SeqCst) {
+                // 超时也要退，别把用户锁在窗口里；Job Object + `force_kill` 会兜底。
+                inner.emit_log(
+                    "warning",
+                    "supervisor",
+                    format!("worker 超过 {} s 未收尾，强制退出", SHUTDOWN_GRACE.as_secs()),
+                );
+            } else {
+                inner.emit_log("info", "supervisor", "worker 已收尾，退出应用");
+            }
+            inner.app.exit(0);
+        });
     }
 
     /// 强制关闭。挂在应用退出路径上，保证进程内**一定**有人动手杀子进程。
@@ -877,6 +980,38 @@ impl Drop for Inner {
     }
 }
 
+/// Windows 错误码：命名管道「读方向」被外部注入层拦截时，spawn 会返回它。
+/// 具详见 `docs/阶段3_界面确认.md` §7.7，判据 `tools/probe_spawn_env.py`。
+const ERR_PIPE_BUSY: i32 = 231;
+/// `ERROR_ACCESS_DENIED`
+const ERR_ACCESS_DENIED: i32 = 5;
+/// `ERROR_FILE_NOT_FOUND`
+const ERR_FILE_NOT_FOUND: i32 = 2;
+
+/// 把 spawn 失败翻译成**用户能照着做**的一句话（规格 §7 的「可操作提示」这条要求）。
+///
+/// 返回的字符串是详情里的**第一行** —— 状态栏只渲染首行，所以动作必须写在这一行里，
+/// 放到后面几行等于没给（`StatusBar.tsx` 的注释记着同一个教训）。
+///
+/// 抽成纯函数是为了能单测：`spawn_child` 本身要真的去启一个失败的进程才跑得到。
+fn hint_for_spawn_error(code: Option<i32>) -> Option<&'static str> {
+    match code {
+        Some(ERR_PIPE_BUSY) => Some(
+            "命中 ERROR_PIPE_BUSY(231)：命名管道「读方向」被外部注入层拦截。\
+             **请改用普通终端启动本程序**（AI 工具沙箱内必然复现，重启系统无效）。\
+             判据：python tools\\probe_spawn_env.py",
+        ),
+        Some(ERR_ACCESS_DENIED) => Some(
+            "权限不足(5)：检查解释器与工作目录的访问权限。\
+             安全软件/沙箱拦截也会表现为 5。",
+        ),
+        Some(ERR_FILE_NOT_FOUND) => Some(
+            "找不到解释器(2)：确认路径存在，或用环境变量 VIDNOTE_PYTHON 显式指定。",
+        ),
+        _ => None,
+    }
+}
+
 /// 启动子进程。**三处细节不能省**：
 /// 1. `CREATE_NO_WINDOW` —— 否则会闪一个黑色控制台窗口（规格 §7）
 /// 2. `PYTHONUTF8/IOENCODING` —— 否则 Python 按 cp936 输出，父子两端编码不一致
@@ -899,11 +1034,20 @@ fn spawn_child(target: &locator::WorkerTarget) -> Result<Child, String> {
     }
 
     cmd.spawn().map_err(|e| {
-        format!(
-            "启动 worker 失败：{}\n  工作目录：{}\n  错误：{e}",
+        // 第一行 = 结论 + 动作（状态栏只显示首行）；后面才是细节。
+        // 已知错误码走 `hint_for_spawn_error`，未知错误码保留系统原文 ——
+        // **不要**给未知错误编一句"听起来合理"的话，那会把人引到错的方向。
+        let hint = hint_for_spawn_error(e.raw_os_error());
+        let mut msg = match hint {
+            Some(h) => format!("启动 worker 失败：{h}\n  原始错误：{e}"),
+            None => format!("启动 worker 失败（{e}）"),
+        };
+        msg.push_str(&format!(
+            "\n  解释器：{}\n  工作目录：{}",
             target.program.display(),
             target.cwd.display()
-        )
+        ));
+        msg
     })
 }
 
@@ -974,5 +1118,50 @@ mod tests {
         let v: Value = serde_json::to_value(&s).unwrap();
         assert_eq!(v["pipeline_state"], json!("running"));
         assert!(v.get("restart_count").is_some());
+    }
+
+    #[test]
+    fn pipe_busy_231_is_translated_into_an_actionable_first_line() {
+        // 231 是本项目最贵的一个坑（排查了两天）。用户看到 `os error 231`
+        // 是没有任何用处的；首行必须直接给出**动作**。
+        let hint = hint_for_spawn_error(Some(231)).expect("231 必须被翻译");
+        assert!(hint.contains("普通终端"), "必须给出唯一的处置动作：{hint}");
+        assert!(
+            hint.contains("probe_spawn_env"),
+            "必须指出可复跑判据：{hint}"
+        );
+        assert!(
+            !hint.contains('\n'),
+            "必须是单行 —— 状态栏只渲染首行，带换行会把动作截掉"
+        );
+    }
+
+    #[test]
+    fn other_known_codes_get_hints_and_unknown_ones_get_none() {
+        assert!(hint_for_spawn_error(Some(5)).is_some());
+        assert!(hint_for_spawn_error(Some(2)).is_some());
+        // 未知错误码必须返回 None：调用方会保留系统原文，
+        // **不要**为了"界面好看"编一句听起来合理的话。
+        assert!(hint_for_spawn_error(Some(2_147_000_000)).is_none());
+        assert!(hint_for_spawn_error(None).is_none());
+    }
+
+    #[test]
+    fn close_is_confirmed_only_when_tasks_are_advancing() {
+        // 有任务在推进 → 拦下来问
+        assert!(needs_close_confirmation(false, true, Some("running")));
+        assert!(needs_close_confirmation(false, true, Some("paused")));
+        // 没任务 / worker 不在 → 直接放行
+        assert!(!needs_close_confirmation(false, true, Some("idle")));
+        assert!(!needs_close_confirmation(false, true, Some("aborted")));
+        assert!(!needs_close_confirmation(false, true, Some("stopped")));
+        assert!(!needs_close_confirmation(false, true, None));
+        assert!(!needs_close_confirmation(false, false, Some("running")));
+    }
+
+    #[test]
+    fn already_confirmed_close_is_never_re_blocked() {
+        // 点过「退出」之后再走一遍关闭流程必须放行，否则弹窗会无限重开。
+        assert!(!needs_close_confirmation(true, true, Some("running")));
     }
 }

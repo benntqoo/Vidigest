@@ -10,6 +10,7 @@ import type { WorkerEvent, WorkerState } from "./types";
 /** Rust 侧 emit 的事件通道（与 `worker/mod.rs` 的常量一致） */
 export const EVENT_CHANNEL = "worker://event";
 export const STATE_CHANNEL = "worker://state";
+export const CLOSE_REQUEST_CHANNEL = "worker://close-requested";
 
 // ---------------------------------------------------------------- 连接状态
 
@@ -48,6 +49,37 @@ export function shutdownWorker(): Promise<void> {
  */
 export function restartWorker(): Promise<void> {
   return invoke<void>("worker_restart");
+}
+
+/**
+ * 用系统默认程序打开本地文件（「查看转写稿」）。
+ *
+ * 走宿主代开而不是插件命令：插件命令要过 ACL 路径 scope，而 `work_dir` 是用户配置的，
+ * 没法在 capabilities 里静态声明。文件不存在会 reject（IO 错误）。
+ */
+export function openLocalPath(path: string): Promise<void> {
+  return invoke<void>("open_local_path", { path });
+}
+
+// ------------------------------------------------------------------ 关闭确认
+
+/** 用户点了窗口关闭，但还有任务在跑（`PLAN §7.2` 第 3 条）。 */
+export interface CloseRequest {
+  /** 触发时的流水线状态，用于文案 */
+  pipeline_state: string | null;
+  hint: string;
+}
+
+export function onCloseRequested(cb: (req: CloseRequest) => void): Promise<UnlistenFn> {
+  return listen<CloseRequest>(CLOSE_REQUEST_CHANNEL, (e) => cb(e.payload));
+}
+
+/**
+ * 确认退出。Rust 侧会先等 worker 优雅收尾（上限 30 s）再退出应用，
+ * 所以调用后**界面会再停留一会儿**，这是正常的，不要催它。
+ */
+export function confirmClose(): Promise<void> {
+  return invoke<void>("worker_confirm_close");
 }
 
 // ---------------------------------------------------------------- 业务语义

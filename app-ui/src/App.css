@@ -432,3 +432,83 @@ button:focus-visible {
   gap: 8px;
   font-size: 12px;
 }
+
+/* ---------------------------------------------------------- 关闭确认弹窗 */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(28 31 36 / 35%);
+}
+
+.modal {
+  width: min(460px, calc(100vw - 48px));
+  padding: 18px 20px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgb(28 31 36 / 18%);
+}
+
+.modal h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.modal p {
+  margin: 0 0 8px;
+  color: var(--text);
+}
+
+.modal-note {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+/* ---------------------------------------------------------- 行右键菜单 */
+
+.ctxmenu {
+  position: fixed;
+  z-index: 200;
+  min-width: 200px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgb(28 31 36 / 16%);
+}
+
+button.ctxitem {
+  display: block;
+  width: 100%;
+  padding: 5px 10px;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+}
+
+button.ctxitem:hover {
+  background: var(--surface-2);
+}
+
+button.ctxitem.danger {
+  color: var(--error);
+}
+
+button.ctxitem.danger:hover {
+  background: #fdf2f2;
+}

@@ -93,11 +93,12 @@ fn locate_dev() -> Result<WorkerTarget, String> {
     }
 
     Err(format!(
-        "找不到 Python 解释器。已尝试：\n\
+        // 首行必须是**动作**：状态栏只渲染首行（见 `StatusBar.tsx`）。
+        "找不到 Python 解释器：请设置环境变量 VIDNOTE_PYTHON 指向装有 faster-whisper 的解释器。\n\
+         已尝试：\n\
          1. 环境变量 VIDNOTE_PYTHON\n\
          2. {}\n\
-         3. PATH 中的 python\n\
-         请设置 VIDNOTE_PYTHON 指向装有 faster-whisper 的解释器。",
+         3. PATH 中的 python",
         root.join(".venv").join("Scripts").join("python.exe").display()
     ))
 }

@@ -70,3 +70,33 @@ pub fn worker_restart(worker: State<'_, Worker>) -> Result<(), String> {
     worker.restart();
     Ok(())
 }
+
+/// 关闭确认框里选「退出并停止任务」后调用（`PLAN §7.2` 第 3 条）。
+///
+/// 它**不会立刻退出应用**：先请 worker 优雅收尾，等它真的退出（上限 30 s）再退 ——
+/// 那段等待就是 `PLAN §7` 说的「优雅关闭 30 s 窗口」，以前窗口一关应用即退时根本拿不到。
+/// 详见 `Worker::confirm_close`。
+#[tauri::command]
+pub fn worker_confirm_close(worker: State<'_, Worker>) -> Result<(), String> {
+    worker.confirm_close();
+    Ok(())
+}
+
+/// 用系统默认程序打开一个本地文件（「查看转写稿」用）。
+///
+/// **为什么不从前端直接调 opener 插件的 `openPath`**（这不是猜的，看过源码）：
+/// `opener:default` 权限集只含 `allow-open-url` / `allow-reveal-item-in-dir` /
+/// `allow-default-urls`，**不含 `allow-open-path`**；更麻烦的是那个命令走 ACL 的
+/// *路径 scope* 校验，而本项目的 `work_dir` 是用户写在 `config.yaml` 里的，
+/// 没法在 `capabilities/*.json` 里静态声明（写死就等于把用户配置钉死）。
+///
+/// 而 `tauri-plugin-opener` 的 crate 文档第 8–10 行明确写着：插件的
+/// **自由函数**（即这里调的这个）**不做任何 scope 校验**。
+/// 所以由宿主代开 —— 既不新增 ACL 配置，也不把用户路径写死在能力文件里。
+///
+/// 文件不存在会返回 IO 错误：正好把「转写还没生成」如实告诉用户，
+/// 而不是静默地什么都不发生。
+#[tauri::command]
+pub fn open_local_path(path: String) -> Result<(), String> {
+    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| e.to_string())
+}
