@@ -31,6 +31,7 @@ from typing import Any, Callable, TextIO
 
 from app.core import concurrency as concurrency_mod
 from app.core import env_probe
+from app.core import paths
 from app.core.dispatcher import Dispatcher
 from app.core.store import Store
 from app.core.urls import extract_many
@@ -206,8 +207,18 @@ class Worker:
         self._install_logging()
         # 关键：此后任何 stray print 都落到 stderr，协议流不会被污染
         sys.stdout = sys.stderr
+        _maybe_enable_faulthandler()
+        _maybe_run_import_probe()
 
         self._bootstrap()
+
+        # **在主线程**预热原生依赖 —— 不能省，也不能挪进线程。
+        # 实测（2026-10-04，打包产物）：非主线程里的首次原生 import 会静默卡死
+        # 2 分钟以上；同一份产物在主线程里 import 全部依赖只要 2.03 s。
+        # 代价是 `ready` 晚约 2 s（源码运行约 0.3 s），换来 daemon 线程不再卡死。
+        ok, detail = env_probe.warmup_native_deps()
+        if not ok:
+            logging.warning("原生依赖预热未完成：%s（后续阶段会给出更准确的错误）", detail)
 
         threading.Thread(target=self._reader_loop, name="stdin-reader", daemon=True).start()
         threading.Thread(target=self._verify_env, name="env-verify", daemon=True).start()
@@ -272,6 +283,17 @@ class Worker:
             )
         logging.info("worker 就绪：%s", self.concurrency.to_dict())
 
+    #: GPU 验证的看门狗超时（秒）。
+    #:
+    #: **为什么必须有**：`verify_cuda` 会加载原生 CUDA 运行库，而原生加载
+    #: **卡住时既没有异常也没有 traceback** —— 实测 2026-10-04：打包产物里静默卡死
+    #: 5 分钟以上，`env_verified` 永不推送，界面就永远停在「验证中」、
+    #: `gpu_verified` 永远是 null。用户看到的是「按钮灰着，也不说为什么」。
+    #:
+    #: 超时后**如实上报「未知」，不是「不可用」**：三态布尔里 `None` 是「不知道」，
+    #: 把它当成「否」等于拿一个未知结论去做并发规划（PLAN §4.2）。
+    ENV_VERIFY_TIMEOUT = 120.0
+
     def _verify_env(self) -> None:
         """后台做一次**真实推理**验证 GPU，完成后推 `env_verified`。
 
@@ -286,19 +308,54 @@ class Worker:
             self._apply_env_verification(False, "配置指定 device=cpu，跳过 GPU 验证")
             return
 
-        ok, detail = env_probe.verify_cuda(
-            self.cfg.model_path(), device=device, compute_type=compute_type
-        )
+        box: list[tuple[bool, str]] = []
+
+        def _run() -> None:
+            try:
+                box.append(
+                    env_probe.verify_cuda(
+                        self.cfg.model_path(), device=device, compute_type=compute_type
+                    )
+                )
+            except BaseException as exc:  # noqa: BLE001 — 子线程里的异常绝不能静默
+                box.append((False, f"验证线程异常：{type(exc).__name__}: {exc}"))
+
+        # 再套一层线程 + `join(timeout)`：本函数自己就住在 daemon 线程里，
+        # 没法给自己设超时，而 `verify_cuda` 是同步阻塞的。
+        inner = threading.Thread(target=_run, name="env-verify-inner", daemon=True)
+        inner.start()
+        inner.join(self.ENV_VERIFY_TIMEOUT)
+
+        if not box:
+            self._apply_env_verification(
+                None,
+                f"GPU 验证超过 {self.ENV_VERIFY_TIMEOUT:.0f} s 未返回，结论为**未知**（不是不可用）。"
+                "常见成因：CUDA 运行库加载被安全软件拦截，或 DLL 缺失导致原生加载挂起。"
+                "worker 日志里有 `CUDA 验证：…` 的分步打点，照它可定位卡在哪一步。",
+            )
+            return
+
+        ok, detail = box[0]
         self._apply_env_verification(ok, detail)
 
-    def _apply_env_verification(self, ok: bool, detail: str) -> None:
+    def _apply_env_verification(self, ok: bool | None, detail: str) -> None:
+        """写回验证结论并广播。
+
+        `ok=None` 表示**未验证 / 未知** —— 三态布尔里它不是「否」（PLAN §4.2）。
+        """
         self.env.cuda.usable = ok
         self.env.cuda.detail = detail
-        self.env.cuda.verified = True
-        # 验证结果可能改变 GPU 可用性 → 并发计划必须重算，并同步给调度器
-        self.concurrency = concurrency_mod.plan(self.cfg, self.env, gpu_usable=ok)
+        self.env.cuda.verified = ok is not None
+
+        # 并发规划用哪个值：
+        # - 已验证（True / False）→ 用结论；
+        # - **未知（None）→ 保持快判结果**，不因为「没验出来」就把用户按 CPU 规划。
+        planned_gpu = bool(self.quick_gpu_usable) if ok is None else ok
+        self.concurrency = concurrency_mod.plan(self.cfg, self.env, gpu_usable=planned_gpu)
         self.dispatcher.conc = self.concurrency
-        logging.info("环境验证：GPU %s —— %s", "可用" if ok else "不可用", detail)
+
+        label = "可用" if ok is True else ("不可用" if ok is False else "未知（未验证）")
+        logging.info("环境验证：GPU %s —— %s", label, detail)
         self.proto.emit(
             "env_verified",
             {
@@ -564,10 +621,79 @@ class Worker:
         }
 
 
+def _maybe_enable_faulthandler() -> None:
+    """`VIDNOTE_FAULTHANDLER=<秒>` 时，定期把所有线程的栈打到 stderr。
+
+    **为什么非它不可**：原生调用（`LoadLibrary`、CUDA 运行库初始化）卡住时，
+    Python 层**没有任何日志可打** —— 打点只会停在卡住之前的最后一步。
+    实测 2026-10-04：打包产物里 `import numpy` 静默卡死 2 分钟以上，
+    `logging` 打点全部停在「nvidia DLL 目录已注入」，看不出栈在哪。
+    `faulthandler` 是 CPython 自带、能在卡死时给出**真实栈帧**的唯一手段。
+
+    默认关闭（它定期往 stderr 写，不该进正常路径）；
+    需要时 `set VIDNOTE_FAULTHANDLER=20`。
+    """
+    raw = os.environ.get("VIDNOTE_FAULTHANDLER", "").strip()
+    if not raw:
+        return
+    try:
+        delay = float(raw)
+    except ValueError:
+        logging.warning("VIDNOTE_FAULTHANDLER 不是数字：%r，忽略", raw)
+        return
+    try:
+        import faulthandler
+    except ImportError as exc:  # pragma: no cover — 标准库，理论上不会缺
+        logging.warning("无法导入 faulthandler：%s", exc)
+        return
+    faulthandler.dump_traceback_later(delay, repeat=True, file=sys.stderr)
+    logging.info("已启用 faulthandler：每 %.0f s dump 一次全部线程栈到 stderr", delay)
+
+
+def _maybe_run_import_probe() -> None:
+    """`VIDNOTE_IMPORT_PROBE=1` 时，在主线程把关键原生依赖**逐个** import 并报耗时。
+
+    **为什么需要**：原生 import 卡死时，普通打点只能告诉你「卡在 import 区间」。
+    实测 2026-10-04：打包产物里 `_verify_env` **子线程**的 `import numpy`
+    静默卡死 2 分钟以上，而同一份 `_internal` 在 venv 下只要 0.3 s。
+    这个 probe 一次能区分两种成因：
+      · probe 里每个都秒完 → 问题是「在**非主线程**里做首次原生 import」；
+      · probe 里同样卡住    → 与线程无关，是打包本身的问题。
+    每步都**立即**上报，所以卡住时最后一条日志就是答案。
+    """
+    if os.environ.get("VIDNOTE_IMPORT_PROBE", "").strip().lower() not in ("1", "true", "yes"):
+        return
+
+    import importlib
+    import time as _time
+
+    logging.info("import 探针：开始（主线程，逐个）")
+    t_all = _time.monotonic()
+    for name in (
+        "app.core.cuda_dll",
+        "numpy",
+        "ctranslate2",
+        "tokenizers",
+        "onnxruntime",
+        "av",
+        "faster_whisper",
+    ):
+        t0 = _time.monotonic()
+        try:
+            importlib.import_module(name)
+        except Exception as exc:  # noqa: BLE001 — 探针不该让 worker 起不来
+            logging.error("import 探针：%s 失败 —— %s: %s", name, type(exc).__name__, exc)
+            continue
+        logging.info("import 探针：%s 完成（%.2fs）", name, _time.monotonic() - t0)
+    logging.info("import 探针：全部结束（累计 %.2fs）", _time.monotonic() - t_all)
+
+
 def main() -> int:
     _configure_streams()
-    cfg_path = os.environ.get("VIDNOTE_CONFIG") or None
-    cfg, used_default = Config.load_or_default(cfg_path)
+    # 配置来源：源码运行 = cwd/config.yaml（与改造前一致）；
+    # 打包运行 = 数据目录下的 config.yaml（见 core/paths.py）。
+    cfg_path = paths.resolve_config_path()
+    cfg, used_default = Config.load_or_default(cfg_path, root=paths.app_root())
     proto = Protocol(raw_stdout)
     return Worker(cfg, proto, config_is_default=used_default).serve()
 

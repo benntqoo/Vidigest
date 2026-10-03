@@ -46,6 +46,9 @@ venv/
 build/
 dist/
 *.spec
+# 例外：PyInstaller 的 spec 是**构建配置**（入库），不是产物。
+# 它必须排在 `*.spec` 之后 —— gitignore 是「后面的规则覆盖前面的」。
+!packaging/*.spec
 
 # ---- Rust / Tauri（阶段 3）----
 # Cargo 构建目录（Tauri 工程位于 app-ui/src-tauri/）

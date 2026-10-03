@@ -22,6 +22,7 @@ from pathlib import Path
 
 from app.core import concurrency as concurrency_mod
 from app.core import env_probe
+from app.core import paths
 from app.core.concurrency import Concurrency
 from app.core.dispatcher import Dispatcher
 from app.core.ffmpeg_locator import INSTALL_HINT as FFMPEG_HINT
@@ -397,9 +398,15 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def _load_config(args: argparse.Namespace) -> tuple[Config, bool]:
-    """加载配置。文件缺失时回退默认值——「clone 下来即可运行」的要求。"""
+    """加载配置。文件缺失时回退默认值——「clone 下来即可运行」的要求。
+
+    路径优先级：`--config` > `VIDNOTE_CONFIG` >（打包运行时）数据目录下的 `config.yaml`。
+    源码运行且两者都没给时 `paths.resolve_config_path()` 返回 `None`，
+    与改造前完全一致。
+    """
     try:
-        cfg, used_default = Config.load_or_default(args.config)
+        cfg_path = args.config or paths.resolve_config_path()
+        cfg, used_default = Config.load_or_default(cfg_path, root=paths.app_root())
     except ConfigError as exc:
         print(f"配置错误：{exc}", file=sys.stderr)
         raise SystemExit(2) from exc

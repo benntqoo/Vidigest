@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import ctypes
 import json
+import logging
 import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -255,6 +257,38 @@ def probe(work_dir: str | Path | None = None) -> EnvReport:
     )
 
 
+def warmup_native_deps() -> tuple[bool, str]:
+    """在**主线程**把原生依赖 import 掉，返回 `(是否齐全, 说明)`。
+
+    ⚠️ **必须在主线程调用。** 实测（2026-10-04，PyInstaller 产物）：
+
+    | 场景 | 结果 |
+    |---|---|
+    | daemon 线程里首次 `import numpy` | **静默卡死 > 2 分钟**（无异常、无 traceback，只有 faulthandler 能看出栈停在 `_multiarray_umath` 的加载） |
+    | 主线程里 import 全部 6 个依赖 | **2.03 s**（numpy 0.30 / onnxruntime 0.21 / av 1.46 / 其余 ≈0） |
+
+    为什么这不是「CUDA 验证专属」的小毛病：`dispatcher` 的阶段函数
+    （下载 / 转写 / 抽帧）跑在**工作线程**里，首次 `import faster_whisper`
+    会踩同一个坑 —— 表现就是「点了开始，任务永远停在 0%」。
+    所以本函数**无条件**执行，与 `runtime.device` 配置无关。
+
+    失败时**不抛异常**：让 `verify_cuda` / pipeline 自己给出更准确的错误信息
+    （它们能区分「缺模型」和「缺 DLL」，这里分不出来）。
+    """
+    t0 = time.monotonic()
+    try:
+        import app.core.cuda_dll  # noqa: F401 — 必须排在 numpy / faster_whisper 之前
+        import numpy  # noqa: F401
+        import ctranslate2  # noqa: F401
+        import onnxruntime  # noqa: F401
+        import av  # noqa: F401
+        from faster_whisper import WhisperModel  # noqa: F401
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
+    logging.info("原生依赖预热完成（%.2fs）", time.monotonic() - t0)
+    return True, ""
+
+
 def verify_cuda(
     model_path: str | Path,
     device: str = "cuda",
@@ -264,6 +298,12 @@ def verify_cuda(
 
     为什么不能用 `get_cuda_device_count()`：它只枚举硬件，即使 cuBLAS/cuDNN
     缺失也会返回 1。唯一可信的判据是「模型能加载 + 能出结果」。
+
+    ⚠️ **分步计时不是调试残留，是必需的**：本函数是整个进程里**唯一**会加载
+    CUDA 运行库的地方，也是最容易「静默卡住」的地方（原生 LoadLibrary 卡住时
+    既没有异常也没有 traceback）。实测 2026-10-04：打包产物里 `_verify_env`
+    线程静默卡了 5 分钟，stderr 与 `log` 事件**一个字都没有**，完全无法定位。
+    这几条 `_tick` 就是为了让下一次卡住时**一眼看出卡在哪一步**。
     """
     import app.core.cuda_dll  # noqa: F401 — 必须在 faster_whisper 之前
 
@@ -271,16 +311,38 @@ def verify_cuda(
     if not model_dir.exists():
         return False, f"模型不存在：{model_dir}（按 README 第 3 步下载）"
 
+    t0 = time.monotonic()
+
+    def _tick(what: str) -> None:
+        logging.info("CUDA 验证：%s（累计 %.1fs）", what, time.monotonic() - t0)
+
+    _tick("nvidia DLL 目录已注入")
+
+    # 三个 import 分开打点：打包产物里实测卡在这一段（2026-10-04），
+    # 合成一步时只能知道「卡在 import」，拆开后能直接指出是哪一个。
     try:
         import numpy as np
+    except Exception as exc:  # noqa: BLE001
+        return False, f"导入 numpy 失败：{type(exc).__name__}: {exc}"
+    _tick("numpy 导入完成")
+
+    try:
+        import ctranslate2  # noqa: F401 — 显式导入，把它的耗时与 faster_whisper 的区分开
+    except Exception as exc:  # noqa: BLE001
+        return False, f"导入 ctranslate2 失败：{type(exc).__name__}: {exc}"
+    _tick("ctranslate2 导入完成")
+
+    try:
         from faster_whisper import WhisperModel
     except Exception as exc:  # noqa: BLE001
         return False, f"导入 faster_whisper 失败：{type(exc).__name__}: {exc}"
+    _tick("faster_whisper 导入完成")
 
     try:
         model = WhisperModel(str(model_dir), device=device, compute_type=compute_type)
     except Exception as exc:  # noqa: BLE001
         return False, f"模型加载失败（CUDA 运行库不可用？）：{type(exc).__name__}: {exc}"
+    _tick("模型加载完成")
 
     try:
         silence = np.zeros(16000, dtype=np.float32)  # 1 秒静音，够触发一次前向
@@ -288,6 +350,7 @@ def verify_cuda(
         list(segments)  # 生成器必须被消费，否则推理根本没执行
     except Exception as exc:  # noqa: BLE001
         return False, f"推理失败：{type(exc).__name__}: {exc}"
+    _tick("推理完成")
 
     return True, f"真实推理通过（输入 {info.duration:.1f}s，device={device}）"
 

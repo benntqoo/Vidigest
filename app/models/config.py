@@ -204,16 +204,23 @@ class Config:
         return cls.from_file(p)
 
     @classmethod
-    def load_or_default(cls, path: str | Path | None = None) -> tuple[Config, bool]:
+    def load_or_default(
+        cls, path: str | Path | None = None, root: str | Path | None = None
+    ) -> tuple[Config, bool]:
         """配置缺失时回退到默认值，返回 (配置, 是否使用了默认值)。
 
         这样 clone 下来没有 config.yaml 也能直接跑（用相对路径默认值），
         符合「下载即可运行」的目标。
+
+        `root` **只在回退分支生效**（文件存在时锚点是配置文件自己的目录，
+        不能让调用方覆盖 —— 否则 `config.yaml` 里的相对路径会锚到别处）。
+        打包运行（PyInstaller）时由 `core.paths.app_root()` 传入可写的数据目录：
+        默认的 `Path.cwd()` 此时是安装目录，Windows 上不可写。
         """
         p = Path(path) if path else Path(DEFAULT_CONFIG_NAME)
         if p.is_file():
             return cls.from_file(p), False
-        return cls.from_dict({}, root=Path.cwd()), True
+        return cls.from_dict({}, root=Path(root) if root else Path.cwd()), True
 
     # ---- 输出 ----
 

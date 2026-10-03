@@ -613,6 +613,10 @@ URL_PATTERNS = {
 - 打包配置 `bundle.externalBin`、托盘、右键菜单、关闭确认——均为后续项
   → **2026-10-04 更新**：右键菜单 ✅ 已实现（`TaskTable.tsx`，四项动作与行内按钮共用回调）；
   关闭确认 ✅ 已实现（`should_confirm_close` + 模态框 + `worker_confirm_close`）；
+  **打包配置** ✅ **已做**：~~`bundle.externalBin`~~ → 实际用 `bundle.resources` 目录映射
+  （`externalBin` 只支持单文件），且刻意放在 overlay 配置 `packaging/tauri.bundle.json` 里 ——
+  写进主配置会让**每次** `cargo build` 复制 2.1 GB，且产物未生成时直接编译失败
+  （把「编译 Rust」与「打包 Python」绑死了）。见 `docs/打包与分发.md`；
   **托盘**（含「后台继续（最小化到托盘）」）仍为后续项 —— 它需要给 `tauri` 加
   `tray-icon` feature 并引入新依赖，且**渲染无法在沙箱内验证**，故不在此轮一并做
 - ~~优雅关闭的 30 s 窗口当前实际拿不到（窗口一关应用即退出，Job Object 会收掉 worker）~~
@@ -648,11 +652,19 @@ URL_PATTERNS = {
 ### 阶段 5：打包（两层）
 
 - **Python 侧**：用 PyInstaller 打成**单目录**（不是单文件——单文件解压慢且模型路径处理麻烦），
-  产物作为 Tauri 的 `externalBin` sidecar 随包分发
+  ~~产物作为 Tauri 的 `externalBin` sidecar 随包分发~~
+  → **2026-10-04 更正**：`externalBin` **只支持单文件**，配单目录会产出
+  「打包成功、运行才缺 DLL」的包。实际走 **`bundle.resources` 的目录映射**
+  （`{"../../build/pyinstaller/vidnote-worker": "worker"}`），相对层级由
+  `tauri-utils` 的 Walk 分支保真（**读实现核过，不是文档说法**）。见 `docs/打包与分发.md`
 - **Rust 侧**：Tauri bundler 出平台安装包
 - 验收：在**没装 Python、也没装 Rust** 的机器上双击能启动（同机模拟）
-- ⚠️ **本阶段风险最高**：CUDA DLL 随 PyInstaller 分发本就未验证（§11.5），
-  叠加 Tauri sidecar 与两层构建链后复杂度翻倍。建议在阶段 3 末期就做一次最小打包验证，不要拖到最后
+- ⚠️ ~~**本阶段风险最高**：CUDA DLL 随 PyInstaller 分发本就未验证（§11.5），
+  叠加 Tauri sidecar 与两层构建链后复杂度翻倍。建议在阶段 3 末期就做一次最小打包验证，不要拖到最后~~
+  → **2026-10-04：风险已提前收敛一半**。阶段 3 末期已完成 PyInstaller 单目录产物的
+  构建 + 冒烟（冒烟里含 `env_verified`，即**真实推理**验证 GPU，不是 `device_count` 那种快判）。
+  **仍未验证**：NSIS 安装包本体、「无 Python / 无 Rust 机器」上的运行 ——
+  见 `docs/打包与分发.md` §6.2
 
 ---
 
@@ -756,6 +768,33 @@ add_nvidia_dll_dirs()
   ```
 - 实测速度约 41 MB/s，2.87 GB 模型约 1 分 35 秒下完
 - 注意：pip 装 CUDA 库时若走系统代理访问国内镜像会**反而更慢**，要加 `--proxy ""`
+
+### 9.7 打包产物里「非主线程的首次原生 import」会静默卡死（2026-10-04）
+
+**现象**：PyInstaller 产物启动后，daemon 线程里 `import numpy` 卡死 **> 2 分钟**；
+同一份 `_internal` 在 venv 下只要 **0.3 s**。无异常、无 traceback —— **零可观测性**。
+
+**对照数据**（同一份产物、同一次启动）：
+
+| 位置 | 结果 |
+|---|---|
+| daemon 线程 `import numpy` | 卡死 > 120 s |
+| **主线程**逐个 import 6 个原生依赖 | **2.03 s** |
+
+**处置**：`env_probe.warmup_native_deps()` 在 **`serve()` 的主线程**里预热
+`cuda_dll / numpy / ctranslate2 / onnxruntime / av / faster_whisper`。
+**无条件执行**，与 `runtime.device` 无关 —— 因为 `dispatcher` 的阶段函数跑在
+**工作线程**里，首次 `import faster_whisper` 会踩同一个坑，
+表现是「点了开始，任务永远停在 0%」。代价：`ready` 晚约 2 s。
+
+**这条同时留下三个诊断开关**（默认关闭，见 `docs/打包与分发.md` §7.4）：
+`VIDNOTE_FAULTHANDLER=<秒>` / `VIDNOTE_IMPORT_PROBE=1` / `VIDNOTE_LOG_STDERR=1`。
+**机制至今未查明**（只有现象与对照），所以换 PyInstaller 版本时必须重跑一次 probe。
+
+**定位流程**（顺序不能反，前一步做不到就上后一步）：
+① `logging` 分步打点 → 只能知道「卡在 import 区间」；
+② `faulthandler` → 拿到真实栈（停在 `numpy/_core/_multiarray_umath` 的原生加载）；
+③ 主线程对照 probe → 区分「非主线程问题」与「打包本身问题」。
 
 ---
 
@@ -876,10 +915,16 @@ add_nvidia_dll_dirs()
 - 把 231 翻译成可操作提示 ✅ **已完成（2026-10-04）**：`hint_for_spawn_error` 把
   231 / 5 / 2 翻译成「首行即动作」的提示（状态栏只渲染首行）；未知错误码**保留系统原文**，
   不编一句听起来合理的话。判据 `tests::pipe_busy_231_is_translated_into_an_actionable_first_line`
-- 阶段 3 末期做一次「PyInstaller 打包 + Tauri sidecar」的最小验证（`bundle.externalBin`）
+- ~~阶段 3 末期做一次「PyInstaller 打包 + Tauri sidecar」的最小验证（`bundle.externalBin`）~~
+  → ✅ **已完成（2026-10-04），但方案换成 `bundle.resources`**（`externalBin` 只支持单文件）。
+  产物 `build/pyinstaller/vidnote-worker/`；构建+校验脚本 `tools/build_worker.py`
+  （前置校验 / 打包 / 产物校验 / 冒烟四段，每段自己报告判据）；详见 `docs/打包与分发.md`。
+  **沙箱外待验**：`VIDNOTE_BUNDLED=1 npm run tauri dev`（L1，验 sidecar 定位）
+  与完整 NSIS 安装包（L2，验分发形态）
 
-> 建议在阶段 3 末期就做一次「PyInstaller 打包 + Tauri sidecar」的最小验证，
-> 不要拖到阶段 5——那两层打包叠加的风险是 §11 里最高的一条。
+> ~~建议在阶段 3 末期就做一次「PyInstaller 打包 + Tauri sidecar」的最小验证，
+> 不要拖到阶段 5——那两层打包叠加的风险是 §11 里最高的一条。~~
+> → **2026-10-04：本条已兑现**。剩下的是「安装包本体」与「干净机器」两段，见 `docs/打包与分发.md` §6.2。
 
 ---
 
