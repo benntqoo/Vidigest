@@ -89,7 +89,7 @@ Vidnote/
 │   ├── probe_env.py         #   → app/core/env_probe.py（硬件探测，已实跑）
 │   ├── probe_spawn_env.py   #   判「能否 spawn 带 stdin 管道的子进程 + 是否被沙箱注入」
 │   ├── rpc_smoke.py         #   IPC 协议冒烟测试（19 条判据，不依赖 Rust 端）
-│   ├── dispatcher_selftest.py   # 调度器语义自测（53 条判据，假阶段函数，秒级跑完）
+│   ├── dispatcher_selftest.py   # 调度器语义自测（66 条判据，假阶段函数，秒级跑完）
 │   ├── phase2_acceptance.py     # 阶段 2 正式验收（23 条判据，真跑 GPU）
 │   ├── build_worker.py      #   PyInstaller 构建 + 28 项冒烟（含真实推理验证 GPU）
 │   └── capture_window.py    #   窗口截图（自动化点击前必做 WindowFromPoint 归属自检）

@@ -257,24 +257,27 @@ def run_main_flow(env: dict[str, str]) -> Host:
     started_evt = host.await_event("started")
     sd = started_evt.get("data", {}) if started_evt else {}
     host.record(
-        "start → started（空队列幂等启动）",
-        started_evt is not None and sd.get("added") == 0,
+        "start → started（空队列幂等启动，落 idle 而非 running）",
+        started_evt is not None and sd.get("added") == 0 and sd.get("state") == "idle",
         f"added={sd.get('added')} state={sd.get('state')}",
     )
 
+    # 2026-10-06 语义修正：空转 start 不再把调度器留在 RUNNING（那会让
+    # pipeline_state 永远停在 running，UI 开始按钮灰死）。idle 下的 pause /
+    # resume 应被拒绝——接受语义的正向覆盖在 dispatcher_selftest 判据 2。
     host.send("pause", req_id="c-8")
     paused_evt = host.await_event("paused")
     host.record(
-        "pause → paused（被接受）",
-        paused_evt is not None and paused_evt.get("data", {}).get("accepted") is True,
+        "pause → paused（idle 下拒绝，不再假接受）",
+        paused_evt is not None and paused_evt.get("data", {}).get("accepted") is False,
         f"state={paused_evt.get('data', {}).get('state') if paused_evt else None}",
     )
 
     host.send("resume", req_id="c-9")
     resumed_evt = host.await_event("resumed")
     host.record(
-        "resume → resumed（被接受）",
-        resumed_evt is not None and resumed_evt.get("data", {}).get("accepted") is True,
+        "resume → resumed（未暂停过则拒绝）",
+        resumed_evt is not None and resumed_evt.get("data", {}).get("accepted") is False,
         f"state={resumed_evt.get('data', {}).get('state') if resumed_evt else None}",
     )
 

@@ -199,6 +199,7 @@ class Dispatcher:
         调用方要重跑就显式把它们放进来（或走 `retry()`）。
         """
         added = 0
+        flipped = False
         with self._cv:
             if self._abort_reason is not None:
                 logging.error("调度器已因环境故障中止，拒绝接收新任务：%s", self._abort_reason)
@@ -213,24 +214,41 @@ class Dispatcher:
                 self._pending.append(task)
                 added += 1
             if added:
+                flipped = self._state is not State.RUNNING
                 self._state = State.RUNNING
                 self._cv.notify_all()
         if added:
             logging.info("调度器接收 %d 条任务（待取队列现 %d 条）", added, len(self._pending))
+        if flipped:
+            # 规格 §4：pipeline_state 是「状态跃迁」事件。submit 把 idle 翻成
+            # running 也是一次跃迁（GUI 在批次跑完后直接 add_tasks 的场景），
+            # 不推的话 UI 的开始按钮会一直按 running 灰着（2026-10-06 卡死缺陷）。
+            self._emit_event("state", {"state": self._state.value})
         return added
 
     def start(self) -> bool:
-        """启动线程池。幂等：已在跑则只保证状态为 RUNNING，返回 False。"""
+        """启动线程池。幂等：已在跑则只同步状态，返回 False。
+
+        状态语义（与 `resume()` 对齐，2026-10-06 修正）：没有待取且没有在跑的
+        任务时落到 **IDLE** 而不是 RUNNING。否则「对着一队 failed 按『开始』」
+        会把调度器永久留在 RUNNING——没有任何任务会触发 `_release` 把它翻回
+        IDLE，`pipeline_state` 事件也不再到来，UI 的开始按钮从此灰死。
+
+        **中止后的恢复也走这里**：全_spawn 分支会清 `_abort_reason` 并重铺线程。
+        前提是中止后线程能全部退出（见 `_put` 对 ABORTED 的感知）。
+        """
         with self._cv:
             if any(t.is_alive() for t in self._threads):
                 if self._abort_reason is None and self._state is not State.STOPPED:
-                    self._state = State.RUNNING
+                    self._state = (
+                        State.RUNNING if (self._pending or self._inflight) else State.IDLE
+                    )
                     self._cv.notify_all()
                 return False
 
             self._stop = False
             self._abort_reason = None
-            self._state = State.RUNNING
+            self._state = State.RUNNING if (self._pending or self._inflight) else State.IDLE
             self._threads = []
             for index in range(max(1, self.conc.n_dl)):
                 self._threads.append(
@@ -523,8 +541,13 @@ class Dispatcher:
         return self._memory_ok()
 
     def _put(self, q: "queue.Queue[Task]", task: Task) -> bool:
-        """带停止感知的入队（有界队列满时阻塞）。"""
-        while not self._stop:
+        """带停止感知的入队（有界队列满时阻塞）。
+
+        必须同时感知 ABORTED（2026-10-06）：下游池因环境故障退出后不会再消费，
+        若在这里无休止重试，下载线程会永远卡在满队列上——线程不死干净，
+        `start()` 就走不到重铺分支，中止后整批无法恢复。
+        """
+        while not self._stop and self._state is not State.ABORTED:
             try:
                 q.put(task, timeout=GATE_POLL_SEC)
                 return True
@@ -545,6 +568,10 @@ class Dispatcher:
                 finished = True
             self._cv.notify_all()
         if finished:
+            # 先推 state 再推 batch_done（规格 §4：pipeline_state 是状态跃迁事件，
+            # →idle 也不例外）。漏推会让 UI 的开始按钮一直按 running 灰着，
+            # 表现为「批次跑完后无法接续新任务」（2026-10-06 卡死缺陷）。
+            self._emit_event("state", {"state": State.IDLE.value})
             self._emit_event("batch_done", {"counts": self.store.count_by_status()})
 
     # ------------------------------------------------------------------ 内部：执行
@@ -612,14 +639,29 @@ class Dispatcher:
         return ok
 
     def _abort(self, reason: str) -> None:
-        """环境级故障 → 中止整批。剩余未开始的条目保持 pending 不动。"""
+        """环境级故障 → 中止整批。剩余未开始的条目保持 pending 不动。
+
+        阶段间队列里的条目**倒回 `_pending`**：它们的下一阶段永远不会有人消费
+        （对应池的线程即将退出），留在队列里既不推进、也让 `submit()` 的去重
+        （只看 `_pending` / `_active`）看不到它们，恢复时会被重复入队。
+        倒回后由 `start()` 重铺线程统一续跑，断点续跑由各阶段自己判断。
+        """
         with self._cv:
             if self._abort_reason is not None:
                 return
             self._abort_reason = reason
             self._state = State.ABORTED
+            for q in (self._q_asr, self._q_frame):
+                while True:
+                    try:
+                        self._pending.append(q.get_nowait())
+                    except queue.Empty:
+                        break
             self._cv.notify_all()
         logging.error("整批中止：%s", reason)
+        # 与 _release 同理：→aborted 也是状态跃迁，必须推 pipeline_state，
+        # 否则 UI 停留在 running，开始按钮灰死且没有任何恢复入口。
+        self._emit_event("state", {"state": State.ABORTED.value})
         self._emit_event("batch_aborted", {"reason": reason})
 
     # ------------------------------------------------------------------ 内部：状态与回调

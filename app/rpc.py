@@ -506,10 +506,15 @@ class Worker:
         **只入队「可续跑」的任务**（pending / downloaded / transcribed 等非终态且
         非 failed）。failed / cancelled 要显式 `retry_task` 才会再跑——否则一条永久
         坏链会在每次点「开始」时被重试一遍，看起来像程序在空转。
+
+        start 在 submit **之前**（2026-10-06）：`submit()` 在 `_abort_reason`
+        置位期间拒收一切任务，而清掉中止位的正是 `start()` 的重铺分支。
+        先 submit 的话，环境故障中止后的第一次「开始」必然 added=0，
+        用户得多点一次且看到「入队 0 条」——顺序反过来才是单次点击可恢复。
         """
         resumable = self.store.resumable()
-        added = self.dispatcher.submit(resumable)
         self.dispatcher.start()
+        added = self.dispatcher.submit(resumable)
         logging.info("start：续跑入队 %d 条（state=%s）", added, self.dispatcher.state.value)
         self.proto.emit(
             "started",

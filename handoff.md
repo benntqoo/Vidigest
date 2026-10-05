@@ -12,7 +12,7 @@
 ```bash
 cd D:/Code/SideProject/Vidnote
 
-./dev.sh check      # 协议层 19 + 调度层 53 + cargo test 20 + tsc —— 全部不用 GPU，秒~分钟级
+./dev.sh check      # 协议层 19 + 调度层 66 + cargo test 20 + tsc —— 全部不用 GPU，秒~分钟级
 ./dev.sh dev        # 开发模式起 GUI（需要 vite；首次先 cd app-ui && npm install）
 ./dev.sh release    # 一条命令出 MSI（约 5 分钟，含 PyInstaller 复用 + Tauri 编译 + WiX）
 ./dev.sh --help     # 其余子命令：bundle-dev / worker / clean
@@ -56,7 +56,7 @@ Windows Terminal / PowerShell）。详见 `docs/工程约定.md` 的 231 条目�
 | 断点续跑 | `taskkill /F /T` 强杀后已完成条目的 `status` / `updated_at` / 产出 mtime **三者均未变** | 同上 |
 | 流水线重叠 | 系数 **1.10×**（>1.0 即阶段确实重叠），转写峰值并发 **1** | 同上；**1.10× 低是物理事实，不是 bug** |
 | IPC 协议 | **19/19** | `python tools/rpc_smoke.py` |
-| 调度层自测（假阶段函数） | **53/53**，秒级，不需 GPU | `python tools/dispatcher_selftest.py` |
+| 调度层自测（假阶段函数） | **66/66**，秒级，不需 GPU | `python tools/dispatcher_selftest.py` |
 | Rust 单测 | **20/20** | `cargo test --lib`（`app-ui/src-tauri`） |
 | 打包链路 | 28 项冒烟，**含真实推理验证 GPU** | `python tools/build_worker.py` |
 | 安装包 | `Vidnote_0.1.0_x64_en-US.msi` **1.45 GiB**，exit 0 | `./dev.sh release` |
@@ -83,8 +83,9 @@ Windows Terminal / PowerShell）。详见 `docs/工程约定.md` 的 231 条目�
 **为什么是 P0**：它一次性解锁 **5 项**复验，且**只能在普通终端做**（沙箱内必然 231）。
 约 5–15 分钟。
 
-1. **§7.8 十步运行清单**（`docs/阶段3_界面确认.md` §7.8）—— 覆盖：自动重启、手动重启按钮、
-   关闭确认弹窗、优雅关闭 30 s 无孤儿、行右键菜单、故障态那 2 处修复的渲染。
+1. **§7.8 十二步运行清单**（`docs/阶段3_界面确认.md` §7.8）—— 覆盖：自动重启、手动重启按钮、
+   关闭确认弹窗、优雅关闭 30 s 无孤儿、行右键菜单、故障态那 2 处修复的渲染、
+   **失败/中止后能接续新任务**（2026-10-06 卡死缺陷回归，第 11/12 步）。
    → **本轮 4 处界面改动全部只有代码级推理、零截图证据**，全卡在这一个前置上。
 2. **L1**：`cd app-ui` → `set VIDNOTE_BUNDLED=1` → `npm run tauri dev`
    → 判据：日志出现「已启动：打包产物：仓库内的 PyInstaller 产物」（**只有这一行能证明走的是
@@ -207,7 +208,8 @@ packaging/            # vidnote-worker.spec + tauri.bundle.json（overlay，刻�
 
 | 提交 | 内容 |
 |---|---|
-| （已改名，未提交） | `productName` → **Vidnote**；crate → `vidnote`；重跑打包验证 exit 0 |
+| （未提交） | 修「批次失败后整批卡死」：终态跃迁补推 `pipeline_state` + abort 恢复链（自测 53→66） |
+| `bb2086f` | 应用改名 `app-ui` → `Vidnote`；PRD、工程约定、handoff 入库 |
 | `802685d` | 一键构建 `dev.sh` + **NSIS 判死**（改走 MSI） |
 | `dff9403` | 打包链路：PyInstaller 单目录 + Tauri `resources`，冒烟 28/28 |
 | `cb31b13` | 关闭确认 + 优雅关闭 30 s / 行右键菜单 / 231 可操作提示 |

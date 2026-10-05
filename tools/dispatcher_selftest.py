@@ -634,6 +634,108 @@ def case_store_thread_safety(c: Checker) -> None:
         store.close()
 
 
+def case_state_events(c: Checker) -> None:
+    """判据 12：状态跃迁事件完整 —— 终态（idle）也必须推 pipeline_state。
+
+    回归背景（2026-10-06 卡死缺陷）：`pipeline_state` 是 UI 灰/亮「开始」按钮的
+    唯一依据，而调度器过去只在 start/pause/resume 时推它。批次收敛（→idle）
+    不推，UI 就永远停在 running——「批次跑完后无法接续新任务」。
+    """
+    print("\n[12] 状态跃迁事件（终态 idle 也要推）")
+    with tempdir() as tmp:
+        tmp_path = Path(tmp)
+        world = FakeWorld()
+        cfg, store, tasks = make_env(tmp_path, 6, world)
+        world.fail_download.add(tasks[3].id)  # 混一条失败：失败收尾同样要推 idle
+        install_fakes(world, store)
+
+        events: list[tuple[str, dict]] = []
+        d = Dispatcher(
+            cfg,
+            store,
+            CONC,
+            memory_floor_gb=0.0,
+            on_event=lambda name, data: events.append((name, dict(data))),
+        )
+        d.submit(tasks)
+        d.start()
+        c.check("wait() 跑完", d.wait(timeout=60))
+        d.stop(timeout=10)
+
+        states = [data["state"] for name, data in events if name == "state"]
+        c.check("首次入队推送 running", states and states[0] == "running", f"states={states}")
+        c.check("批次收敛推送 idle（含失败条目时同样）", states and states[-1] == "idle", f"states={states}")
+        c.check("batch_done 事件在列", any(name == "batch_done" for name, _ in events))
+        store.close()
+
+
+def case_abort_recovery(c: Checker) -> None:
+    """判据 13：环境故障中止后可恢复 —— 线程退干净、start 重铺、单次续跑完成。
+
+    回归背景（2026-10-06）：中止曾把调度器永久焊死在三处——
+    ① `_put` 不感知 ABORTED，下载线程卡在满队列上永不退出，`start()` 走不到
+    重铺分支；② 队列里的任务没人消费也不回 `_pending`，恢复时丢失；
+    ③ 终态 aborted 不推 `pipeline_state`，UI 开始按钮灰死无恢复入口。
+    """
+    print("\n[13] 中止后的恢复（单次 start 可续跑）")
+    with tempdir() as tmp:
+        tmp_path = Path(tmp)
+        world = FakeWorld()
+        cfg, store, tasks = make_env(tmp_path, 12, world)
+        fatal = tasks[0].id
+        world.fatal_download.add(fatal)
+        install_fakes(world, store)
+
+        global DELAY_ASR
+        original = DELAY_ASR
+        DELAY_ASR = 1.0  # 中止时有任务正在转写：放大「线程能否退干净」
+        try:
+            events: list[tuple[str, dict]] = []
+            d = Dispatcher(
+                cfg,
+                store,
+                CONC,
+                memory_floor_gb=0.0,
+                on_event=lambda name, data: events.append((name, dict(data))),
+            )
+            d.submit(tasks)
+            d.start()
+            c.check("wait() 返回 False（被中止）", not d.wait(timeout=60))
+            # wait() 在 _abort 置位即返回，而 aborted/batch_aborted 事件在锁外
+            # 才发出——短暂轮询等事件落地，再断言（否则是测试抢跑，不是代码错）。
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and not any(
+                name == "batch_aborted" for name, _ in events
+            ):
+                time.sleep(0.02)
+            states = [data["state"] for name, data in events if name == "state"]
+            c.check("中止跃迁推送 aborted", states and states[-1] == "aborted", f"states={states}")
+            c.check("batch_aborted 事件在列", any(name == "batch_aborted" for name, _ in events))
+
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and any(t.is_alive() for t in d._threads):
+                time.sleep(0.02)
+            alive = [t.name for t in d._threads if t.is_alive()]
+            c.check("中止后线程全部退出（_put 感知 ABORTED）", not alive, f"alive={alive}")
+
+            world.fatal_download.clear()  # 模拟「环境已修好」
+            c.check("start() 重铺线程（返回 True）", d.start())
+            c.check("abort_reason 已清除", d.abort_reason is None)
+            c.check("retry(故障条) 被接受", d.retry(fatal))
+            d.submit(store.resumable())  # 与 rpc._cmd_start 一致：可续跑的一并补进队
+            c.check(
+                "恢复后 12 条全部 done（队列任务已倒回、无丢失）",
+                d.wait(timeout=60) and counts(store).get("done") == 12,
+                f"counts={counts(store)}",
+            )
+            states = [data["state"] for name, data in events if name == "state"]
+            c.check("恢复收敛后推 idle", states and states[-1] == "idle", f"states={states}")
+            d.stop(timeout=10)
+        finally:
+            DELAY_ASR = original
+            store.close()
+
+
 def main() -> int:
     print("调度器自测 —— app/core/dispatcher.py（假阶段，不需要 GPU）")
     c = Checker()
@@ -650,6 +752,8 @@ def main() -> int:
             case_retry,
             case_bounded_queue,
             case_store_thread_safety,
+            case_state_events,
+            case_abort_recovery,
         ):
             try:
                 case(c)
