@@ -188,6 +188,29 @@ python -m app.cli list
 下次运行同一条命令即自动续跑——已完成的不重跑，停在中间态的回退到上一稳定态。
 **不需要** `--retry`（那是给 `failed` / `cancelled` 用的）。
 
+## 打包（GUI 安装包）
+
+```bash
+./dev.sh release     # 出 MSI 安装包（约 5 分钟）
+./dev.sh --help      # 其余子命令：dev / bundle-dev / worker / check / clean
+```
+
+产物：`app-ui/src-tauri/target/release/bundle/msi/*.msi`（**1.45 GiB**）。
+装完的程序**不需要用户机器上有 Python 或 Rust** —— Python 侧已打成
+PyInstaller 单目录产物，作为 Tauri 的 resources 落进 `<安装目录>\worker\`。
+
+Windows 上从 cmd / PowerShell 调要写成 `bash dev.sh release`。
+
+三个与直觉相反的点（细节见 `docs/打包与分发.md`）：
+
+- **只有 MSI，没有 `-setup.exe`**：2.5 GiB 载荷超 NSIS 的 2 GiB 硬限制，
+  且 Tauri 模板把 `/SOLID` 写死，改压缩算法无效。NSIS 那条路已判死。
+- **第一次构建要联网**：WiX 工具链是自动下载的（`%LOCALAPPDATA%\tauri`），之后可离线。
+- **模型（2.9 GiB）不进包**：首次启动会生成 `%LOCALAPPDATA%\Vidnote\config.yaml`，
+  把 `large-v3` 放进去或改 `model_dir` 指向已有模型。
+
+未验证：**干净机器**上的安装与运行（同机模拟不算，本机有 Python 也有 Rust）。
+
 ## samples/ — 测试基线（本地留存，不入库）
 
 阶段 1 的验收方式是「重跑同一段视频，产出与基线逐字符比对」。基线文件**不进 git**（派生自第三方视频），但在本地必须保留，**不要删**。原因、代价与重建方式见 `samples/README.md`。

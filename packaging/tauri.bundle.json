@@ -2,6 +2,9 @@
   "bundle": {
     "resources": {
       "../../build/pyinstaller/vidnote-worker": "worker"
-    }
+    },
+    "targets": [
+      "msi"
+    ]
   }
 }

@@ -617,6 +617,10 @@ URL_PATTERNS = {
   （`externalBin` 只支持单文件），且刻意放在 overlay 配置 `packaging/tauri.bundle.json` 里 ——
   写进主配置会让**每次** `cargo build` 复制 2.1 GB，且产物未生成时直接编译失败
   （把「编译 Rust」与「打包 Python」绑死了）。见 `docs/打包与分发.md`；
+  **2026-10-05 补齐**：`./dev.sh release` 一条命令出安装包（实测 exit 0，约 5 分钟）；
+  `targets` 固定为 **`msi`** —— **NSIS 已判死**：2.5 GiB 载荷超 NSIS 的 2 GiB 硬限制，
+  且 Tauri 模板把 `/SOLID` 写死（换 `compression` 无效，两次实测报错一字不差）。
+  证据见 `docs/打包与分发.md` §3.1；
   **托盘**（含「后台继续（最小化到托盘）」）仍为后续项 —— 它需要给 `tauri` 加
   `tray-icon` feature 并引入新依赖，且**渲染无法在沙箱内验证**，故不在此轮一并做
 - ~~优雅关闭的 30 s 窗口当前实际拿不到（窗口一关应用即退出，Job Object 会收掉 worker）~~
@@ -657,14 +661,18 @@ URL_PATTERNS = {
   「打包成功、运行才缺 DLL」的包。实际走 **`bundle.resources` 的目录映射**
   （`{"../../build/pyinstaller/vidnote-worker": "worker"}`），相对层级由
   `tauri-utils` 的 Walk 分支保真（**读实现核过，不是文档说法**）。见 `docs/打包与分发.md`
-- **Rust 侧**：Tauri bundler 出平台安装包
+- **Rust 侧**：Tauri bundler 出平台安装包 → **实际只出 MSI**（NSIS 不可用，见下）
 - 验收：在**没装 Python、也没装 Rust** 的机器上双击能启动（同机模拟）
 - ⚠️ ~~**本阶段风险最高**：CUDA DLL 随 PyInstaller 分发本就未验证（§11.5），
   叠加 Tauri sidecar 与两层构建链后复杂度翻倍。建议在阶段 3 末期就做一次最小打包验证，不要拖到最后~~
   → **2026-10-04：风险已提前收敛一半**。阶段 3 末期已完成 PyInstaller 单目录产物的
   构建 + 冒烟（冒烟里含 `env_verified`，即**真实推理**验证 GPU，不是 `device_count` 那种快判）。
-  **仍未验证**：NSIS 安装包本体、「无 Python / 无 Rust 机器」上的运行 ——
-  见 `docs/打包与分发.md` §6.2
+  → **2026-10-05：第一层打包整链闭环**。`./dev.sh release` 一条命令 → MSI **1.45 GiB**
+  （exit 0，全程约 5 分钟，含 Tauri 编译 + WiX）。**NSIS 判死**：2.5 GiB 超 NSIS 硬限制，
+  Tauri 模板写死 `/SOLID`，换压缩算法无效（`docs/打包与分发.md` §3.1）。
+  **仍未验证**：装到**干净机器**上的安装与运行（本机有 Python 也有 Rust，
+  `locate_bundled()` 可能回落到其它候选 ⇒ **同机模拟不算数**）——
+  判据清单见 `docs/打包与分发.md` §6.2
 
 ---
 
