@@ -83,3 +83,6 @@ samples/*
 
 # 产出形态参考取自同一段第三方视频，仅本地留存
 docs/样例产出_参考.md
+
+# ---- ZCode 会话工件（skills 目录仍入库）----
+.zcode/memory/

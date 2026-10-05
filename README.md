@@ -10,11 +10,16 @@
 |---|---|---|
 | — | 链路验证 + 环境实测 | ✅ 完成（见 `docs/实测记录.md`） |
 | — | 开发计划书 | ✅ 完成（见 `PLAN.md`） |
+| — | **产品需求文档（PRD）** | ✅ 完成（见 `docs/PRD.md`） |
 | 1 | 核心流水线（CLI，无 GUI） | ✅ 完成（验收通过） |
 | 2 | 并发调度 + 断点续跑 | ✅ 完成（验收 23/23 通过） |
-| 3 | GUI（Rust + Tauri，Python sidecar） | ⬜ 待开发 |
-| 4 | cookie 自动化 + 汇总模块 | ⬜ 待开发 |
-| 5 | 打包（PyInstaller + Tauri，两层） | ⬜ 待开发 |
+| 3 | GUI（Rust + Tauri，Python sidecar） | 🟡 闭环已通；剩**托盘 + 后台继续**与**沙箱外渲染复验** |
+| 4 | cookie 自动化 + 汇总模块 | ⬜ **未开始**（配置项已留，无实现） |
+| 5 | 打包（PyInstaller + Tauri，两层） | 🟡 主体完成（`./dev.sh release` exit 0 → MSI 1.45 GiB）；待**干净机器**验证 |
+
+> **当前进度与下一步看 `handoff.md`**；**产品最终目标与验收标准看 `docs/PRD.md`**。
+> 阶段 5 排在最后但**提前做了** —— 它是 `PLAN.md` §11 里风险最高的一条（CUDA DLL 随包分发
+> × 两层构建链），早做早暴露，结果确实暴露了 NSIS 不可用与 `externalBin` 不支持单目录两个硬约束。
 
 **阶段 1 完成**：全链路跑通（下载 → 抽音频 → GPU 转写 → 落库，实测 2 分 36 秒 / 20 分钟视频），
 产出与基线 `samples/transcript_gpu.txt` **逐字节一致**（662 段），复现性经两次独立运行验证。
@@ -45,7 +50,7 @@
 | 类型 | 内容 | 入库 |
 |---|---|---|
 | 源码 | `app/`、`prototypes/`、`tools/` | ✅ |
-| 技术文档 | `PLAN.md`、`README.md`、`docs/实测记录.md`、`docs/IPC协议规格.md`、`prototypes/README.md`、`samples/README.md` | ✅ |
+| 技术文档 | `PLAN.md`、`README.md`、`handoff.md`、`docs/PRD.md`、`docs/实测记录.md`、`docs/IPC协议规格.md`、`docs/工程约定.md`、`docs/打包与分发.md`、`prototypes/README.md`、`samples/README.md` | ✅ |
 | 配置模板 | `config.example.yaml`、`requirements.txt` | ✅ |
 | 模型权重 | `models/large-v3/`（2.87 GB） | ❌ 自行下载，见「快速开始」第 3 步 |
 | 用户配置 | `config.yaml` | ❌ 含本机路径，自行生成 |
@@ -59,8 +64,10 @@
 
 ```
 Vidnote/
+├── handoff.md               # ★交接：当前进度 + 下一步该做什么
 ├── PLAN.md                  # ★开发计划书：架构、接口契约、并发公式、验收清单
 ├── README.md                # 本文件
+├── dev.sh                   # ★一键构建：release / dev / check / worker / clean
 ├── requirements.txt         # Python 依赖（含 CUDA 运行库的安装注意事项）
 ├── config.example.yaml      # 配置模板，复制为 config.yaml 使用
 ├── app/                     # ★Python 功能层
@@ -71,23 +78,32 @@ Vidnote/
 │   ├── models/              #   Task / Config 数据类
 │   ├── cli.py               #   人用入口 + 验收入口（--jobs 1 走串行黄金路径）
 │   └── rpc.py               #   Rust 宿主入口（sidecar 常驻 worker）
-├── app-ui/                  # ★Rust + Tauri 工程（阶段 3）
+├── app-ui/                  # ★Rust + Tauri 工程（阶段 3；目录名未随应用改名而改）
+├── packaging/               # ★PyInstaller spec + Tauri bundle overlay（resources 映射）
 ├── prototypes/              # ★已验证原型脚本，阶段 1 重构的直接输入
 │   ├── transcribe.py        #   → app/core/transcriber.py（含 CUDA DLL 加载的正确实现）
-│   ├── state2cookie.py      #   → app/core/cookies.py
 │   ├── make_sheets.py       #   → app/core/frames.py
+│   ├── state2cookie.py      #   → app/core/cookies.py（⚠ 阶段 4 未开始，cookies.py 尚不存在）
 │   └── README.md            #   各脚本的接口与环境假设
 ├── tools/
 │   ├── probe_env.py         #   → app/core/env_probe.py（硬件探测，已实跑）
+│   ├── probe_spawn_env.py   #   判「能否 spawn 带 stdin 管道的子进程 + 是否被沙箱注入」
 │   ├── rpc_smoke.py         #   IPC 协议冒烟测试（19 条判据，不依赖 Rust 端）
 │   ├── dispatcher_selftest.py   # 调度器语义自测（53 条判据，假阶段函数，秒级跑完）
-│   └── phase2_acceptance.py     # 阶段 2 正式验收（23 条判据，真跑 GPU）
+│   ├── phase2_acceptance.py     # 阶段 2 正式验收（23 条判据，真跑 GPU）
+│   ├── build_worker.py      #   PyInstaller 构建 + 28 项冒烟（含真实推理验证 GPU）
+│   └── capture_window.py    #   窗口截图（自动化点击前必做 WindowFromPoint 归属自检）
 ├── models/                  # 模型权重目录（内容不入库，需自行下载）
 ├── samples/                 # 测试基线（内容不入库，仅 README.md 入库）
 └── docs/
+    ├── PRD.md               # ★产品需求文档：最终目标 D1–D6、需求、最终验收标准
+    ├── 工程约定.md           # ★60+ 条硬规则全量清单（改代码前必读）
     ├── 实测记录.md           # ★事实源：本机性能实测与环境快照
     ├── IPC协议规格.md         # ★Rust 宿主 ↔ Python Worker 的接口契约
-    └── 样例产出_参考.md       # 产出形态参考（本地留存，不入库）
+    ├── 打包与分发.md          #   两层打包、NSIS 判死依据、干净机验证清单
+    ├── 阶段3_打通记录.md      #   Rust↔Python 打通的三个阻塞（含真实代码缺陷）
+    ├── 阶段3_界面确认.md      #   界面确认 + 沙箱外验证清单（§7.8 / §7.9）
+    └── 样例产出_参考.md       #   产出形态参考（本地留存，不入库）
 ```
 
 ## 快速开始
@@ -195,7 +211,12 @@ python -m app.cli list
 ./dev.sh --help      # 其余子命令：dev / bundle-dev / worker / check / clean
 ```
 
-产物：`app-ui/src-tauri/target/release/bundle/msi/*.msi`（**1.45 GiB**）。
+产物：`app-ui/src-tauri/target/release/bundle/msi/Vidnote_0.1.0_x64_en-US.msi`（**1.45 GiB**）。
+装完的形态：安装目录 `%ProgramFiles%\Vidnote\`，桌面 / 开始菜单快捷方式名叫 `Vidnote`，
+卸载项 `Uninstall Vidnote`，数据目录 `%LOCALAPPDATA%\Vidnote`；
+**主程序文件名是小写的 `vidnote.exe`**（Tauri 用 cargo 包名，`productName` 不改它 —— 查进程时注意）。
+（**2026-10-06 应用改名**：`productName` 由脚手架的 `app-ui` 改为 `Vidnote`；
+`app-ui/` 只是工程目录名，保持不变。）
 装完的程序**不需要用户机器上有 Python 或 Rust** —— Python 侧已打成
 PyInstaller 单目录产物，作为 Tauri 的 resources 落进 `<安装目录>\worker\`。
 
@@ -233,7 +254,9 @@ Windows 上从 cmd / PowerShell 调要写成 `bash dev.sh release`。
 > v1（649 段）因产生它的 `initial_prompt` 未记录而作废。判据未放宽，只是基线换代——
 > **比对失败先查参数快照表，不要先怀疑代码**（实现与原型同参数下已实测逐字节一致）。
 
-## 已知坑（实现时必读 PLAN.md §9）
+## 已知坑（改代码前必读 `docs/工程约定.md` —— 那里是 60+ 条全量清单）
+
+下面 11 条是最容易踩的；另有 `PLAN.md` §9。
 
 1. **CUDA DLL 加载**：`os.add_dll_directory()` 的返回值**必须引用住**，且还要注入 `PATH`，且必须在 `import ctranslate2` 之前 —— 三层缺一不可，否则报 `cublas64_12.dll not found`。
 2. `ctranslate2.get_cuda_device_count() == 1` **不代表 GPU 可用**，只代表检测到硬件。真正的验证是跑一次真实推理。
