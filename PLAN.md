@@ -763,6 +763,23 @@ add_nvidia_dll_dirs()
 - 转换规则：`domain` 以 `.` 开头则 include_sub 为 `TRUE`；`expires<=0` 用 `now+1年`；`httpOnly` 加 `#HttpOnly_` 前缀；`name` 为空的行跳过。参考实现：`prototypes/state2cookie.py`。
 - `ttwid` 有效期约 24 小时，程序需要能检测失效并自动重取。
 
+**「无 cookie 解析抖音」实测判死（2026-10-10，本机逐条实验）**：
+
+- yt-dlp 的 DouyinIE 只调 `www.douyin.com/aweme/v1/web/aweme/detail/`，拿不到
+  `aweme_detail` 就报 "Fresh cookies"；源码留有 TODO「未实现验证挑战代码」。
+- 字节的 ttwid 签发端点（`ttwid.bytedance.com/ttwid/union/register/`）**匿名 POST
+  即可拿到 ttwid**（无需浏览器）——但只有它不够：curl 直调 detail API 被
+  `ArgusSecurityPlugin Uifid Not Found` 拦截；yt-dlp 喂「ttwid」「ttwid+合成
+  s_v_web_id」两种 cookies.txt 均仍失败。**真正的门槛是 Argus 客户端指纹/签名
+  （JS 环境），不是 cookie 本身**。
+- 移动分享页 `iesdouyin.com/share/video/<id>` 无 cookie 可访问（200），但已是
+  SSR 壳，视频数据由 JS 后取，页面 JSON 里没有 play_addr。
+- 社区现状（2026）：有效 cookie 也偶有失败；绕法集中在 Playwright 抓包或
+  第三方下载器（f2 / TikTokDownloader / Douyin_TikTok_Download_API，自实现
+  a_bogus 签名）。后者与「自包含、不引重依赖」的项目约束冲突，且是猫鼠游戏，
+  不采纳。**结论：匿名 cookie（一次浏览器访问级别）是当前现实下限，
+  自动化走阶段 4 playwright 重取。**
+
 ### 9.6 模型下载
 
 - HuggingFace 直连不通，必须走 `hf-mirror.com`
