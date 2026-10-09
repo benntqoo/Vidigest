@@ -1,6 +1,7 @@
 # Vidnote — 交接文档
 
-> **最后更新**：2026-10-06（应用改名 `app-ui` → `Vidnote` 之后）
+> **最后更新**：2026-10-10（进度复核：补记 10-08 那次构建 + 修正产物路径与计数）
+> ~~2026-10-06（应用改名 `app-ui` → `Vidnote` 之后）~~
 > **本文定位**：**当前状态 + 下一步该做什么**。产品目标与需求见 `docs/PRD.md`，
 > 实现细节与实测证据见 `PLAN.md`、`docs/实测记录.md`、`docs/打包与分发.md`、`docs/阶段3_*.md`。
 > **改代码之前先读 `docs/工程约定.md`** —— 那里是 60+ 条踩过的坑（每条都能省掉一次重复排查）。
@@ -60,10 +61,13 @@ Windows Terminal / PowerShell）。详见 `docs/工程约定.md` 的 231 条目�
 | 下载层自测（cookie 失败翻译） | **7/7**，纯逻辑不联网 | `python tools/fetcher_selftest.py` |
 | Rust 单测 | **20/20** | `cargo test --lib`（`app-ui/src-tauri`） |
 | 打包链路 | 28 项冒烟，**含真实推理验证 GPU** | `python tools/build_worker.py` |
-| 安装包 | `Vidnote_0.1.0_x64_en-US.msi` **1.45 GiB**，exit 0 | `./dev.sh release` |
+| 安装包 | `Vidnote_0.1.0_x64_en-US.msi` **1.45 GiB**，exit 0 | `./dev.sh release`；⚠️ 磁盘上该文件时间戳为 **10-08 21:58**（比本节记录的那次更晚，见 §7 新增的「无提交」行） |
 | 无孤儿进程 | 进程树 `vidnote.exe → python.exe(venv 壳) → python.exe`，热重载后旧实例消失 | Job Object 三道回收 |
 | 界面渲染 | 每处显示都能指回事件来源、随异步事件更新、鼠标键盘生效 | 真实窗口截图，`docs/阶段3_界面确认.md` |
 | 故障态呈现 | 真杀 worker 进程树（不模拟）→ 按钮全禁用 + 退出原因进日志区 | 同上 |
+
+**2026-10-10 复核复跑**（工作区干净、代码无改动的前提下确认数字未漂）：协议层 **19/19**、
+调度层 **66/66**、fetcher **7/7** —— 与上表一致。
 
 **改名后的落位（2026-10-06 读 `wix/x64/main.wxs` 核过，不是推断）**：
 
@@ -157,9 +161,13 @@ Windows Terminal / PowerShell）。详见 `docs/工程约定.md` 的 231 条目�
 
 ### 第 5 步：清理（不急，但别忘）
 
-- `bundle/msi/app-ui_0.1.0_x64_en-US.msi`（1.45 GiB）—— **已作废**，留着会一直出现在
-  `dev.sh` 的产物报告里。
-- `build/pyinstaller/*.old-*` —— 已积 5 个目录（15 GB 级）。`./dev.sh clean --yes` 清。
+- ~~`bundle/msi/app-ui_0.1.0_x64_en-US.msi`（1.45 GiB）—— **已作废**，留着会一直出现在 `dev.sh` 的产物报告里。~~
+  → **2026-10-10 实测改写**：作废 MSI 仍在，真实路径是
+  **`app-ui/src-tauri/target/release/bundle/msi/app-ui_0.1.0_x64_en-US.msi`**（1.5 GB，时间戳 10-06 04:18）。
+  原文写成简写路径 `bundle/msi/` 是错的 —— `BUNDLE_DIR="$REPO/app-ui/src-tauri/target/release/bundle"`（`dev.sh:39`）。
+  **该目录共 2.9 GB**（作废 + 现行两个 MSI 各 1.5 GB），清理时别连现行那个一起删。
+- `build/pyinstaller/*.old-*` —— ~~已积 5 个目录（15 GB 级）~~ → **2026-10-10 实测 6 个**
+  （`20261004×4 + 20261006 + 20261008`，15 GB 级）。`./dev.sh clean --yes` 清。
 
 ---
 
@@ -214,9 +222,10 @@ packaging/            # vidnote-worker.spec + tauri.bundle.json（overlay，刻�
 
 | 提交 | 内容 |
 |---|---|
-| （本次文档同步） | IPC 规格 v1.2（终态推送语义更正）+ PRD D6/FR-2/FR-9 现状对齐 |
+| `7ff6105` | 文档同步：IPC 规格 v1.2（终态推送语义更正）+ PRD D6/FR-2/FR-9 现状对齐 |
 | `9c202fe` | PLAN §9.5 补「无 cookie 解析抖音」实测判死（ttwid 可匿名签发但 Argus 指纹层拦截） |
 | `7175712` | 抖音 cookie 失败翻译（D6）+ `tools/refresh_cookies.py` 过渡脚本 + fetcher 自测 7 条 |
+| —（**无提交**） | **10-08 21:58 又跑过一次 `./dev.sh release`** —— 产物 `Vidnote_0.1.0_x64_en-US.msi` 与 `vidnote.exe` 时间戳晚于 10-06 那次记录，但**当时既没提交也没写文档**，2026-10-10 复核时补记。含义：当前 MSI 是 10-08 的构建，不是 §2 记录的那一次 |
 | `8d9d51f` | 修「批次失败后整批卡死」：终态跃迁补推 `pipeline_state` + abort 恢复链（自测 53→66） |
 | `d7193e8` | 应用改名 `app-ui` → `Vidnote`；PRD、工程约定、handoff 入库 |
 | `802685d` | 一键构建 `dev.sh` + **NSIS 判死**（改走 MSI） |
@@ -229,3 +238,8 @@ packaging/            # vidnote-worker.spec + tauri.bundle.json（overlay，刻�
 
 > 详细提交信息 `git log`。**注意**：`PLAN.md` 里多处保留「原文划删 + 补日期」的更正痕迹，
 > 那是项目刻意的手法（`docs/工程约定.md`「不要静默覆盖」），**不是没整理干净**。
+> 同理，上表 **10-08 那行在 `git log` 里查不到** —— 那次只留下构建产物、没有提交，
+> 是 2026-10-10 复核时从文件时间戳发现的。
+>
+> **仓库状态（2026-10-10 复核）**：`main` 领先 `origin/main` **9 个提交未推**（`origin/main` 停在
+> `f99abea`）。全是本地提交 —— 换机器 / 重建仓库前先推。
