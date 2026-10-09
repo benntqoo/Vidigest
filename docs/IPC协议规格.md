@@ -311,9 +311,9 @@ stdout 写入     → 加锁后单线程写入（JSON Lines 天然按行独立�
 | 8 | `add_tasks` 跨批次去重 | 重复链接以 `reason=duplicate` 出现在 `skipped` 里 |
 | 9 | `list_tasks` | 返回全量快照 |
 | 10 | `remove_task` | 清空队列 |
-| 11 | `start` 幂等 | 空队列 `start` → `started`，`added=0` |
-| 12 | `pause` → `paused` | 被接受 |
-| 13 | `resume` → `resumed` | 被接受 |
+| 11 | `start` 幂等 | 空队列 `start` → `started`，`added=0`~~且无副作用~~（2026-10-06 更正：空转 start 落 **idle** 而非 running，见 v1.2） |
+| 12 | `pause` → `paused` | ~~被接受~~（2026-10-06 更正：idle 下**被拒绝** `accepted=false`——空转 start 不再留在 running。接受语义的正向覆盖在 `dispatcher_selftest` 判据 2） |
+| 13 | `resume` → `resumed` | ~~被接受~~（2026-10-06 更正：未暂停过则**被拒绝**。同上） |
 | 14 | `cancel_task` 非法 id | 回 `E_BAD_ARGS`，进程存活 |
 | 15 | `retry_task` 非法 id | 回 `E_BAD_ARGS`，进程存活 |
 | 16 | `env_verified` 异步推送 | 真实推理验证结果异步到达：`device=cuda`、`gpu_usable=True` |
@@ -350,4 +350,5 @@ stdout 写入     → 加锁后单线程写入（JSON Lines 天然按行独立�
 | 日期 | 版本 | 变更 |
 |---|---|---|
 | 2026-10-02 | v1 | 首版。确立 stdio + JSON Lines、命令/事件清单、状态语义、心跳、进程回收与验收判据 |
+| 2026-10-06 | v1.2 | 语义更正（卡死缺陷修复的配套）：① `pipeline_state` 按 §4 本义「状态跃迁」补齐**终态推送**（→idle 于批次收敛、→aborted 于整批中止），此前实现只在 start/pause/resume 时推送，UI 开始按钮会永久灰死；② 空队列 `start` 落 idle 而非 running（与 `resume()` 的条件式语义对齐）；③ 中止后单次 `start` 可恢复（`_cmd_start` 改为先 start 后 submit，`_put` 感知 ABORTED，队列条目倒回 pending）。§9 判据 11/12/13 同步更正 |
 | 2026-10-03 | v1.1 | ① 新增 `cancelled` 状态与 §3.1 取消语义（协作式取消、检查点位置、两条硬要求）；② 事件清单补齐调度器事件：`pipeline_state` / `resource_warning` / `batch_aborted` / `batch_done`，`task_update` 之外的控制面事件改名映射（`dispatcher` 只报事实，名字翻译在 `rpc.py` 的 `EVENT_NAMES`）；③ `ready` 增 `pipeline_state`；④ §4.1 补限流落地常量与「限流在调度器做，不在 rpc 做」的理由；⑤ §9 判据从 8 条扩到 19 条（含新修好的 EOF 判据），并标注两条**尚未覆盖**的项（转写进行中的心跳、控制面事件在真实批次下的时序）；⑥ `E_NOT_IMPLEMENTED` 已无命令返回 |

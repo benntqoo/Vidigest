@@ -138,7 +138,11 @@ Windows Terminal / PowerShell）。详见 `docs/工程约定.md` 的 231 条目�
 
 | 子项 | 配置已留 | 要做的事 |
 |---|---|---|
-| cookie 自动重取 | `cookie.browser` / `cookie.auto_refresh` | 调 `playwright-cli` 导出 storage-state → 转 Netscape `cookies.txt`（`--cookies-from-browser` 在 Windows 新版浏览器上必失败，见 `PLAN.md` §9.5）。**验收：手动把 `cookies.txt` 改坏，程序能检测到并自动重新采集** |
+| cookie 自动重取 | `cookie.browser` / `cookie.auto_refresh` |
+
+> **过渡现状（2026-10-10）**：抖音缺/过期 cookie 已有可操作提示 + `tools/refresh_cookies.py`
+> 手动刷新；「无 cookie 解析」已实测判死（`PLAN.md` §9.5）——门槛是 Argus 指纹层不是
+> cookie 本身，自动化只能走 playwright 路线（即本表的方案）。 调 `playwright-cli` 导出 storage-state → 转 Netscape `cookies.txt`（`--cookies-from-browser` 在 Windows 新版浏览器上必失败，见 `PLAN.md` §9.5）。**验收：手动把 `cookies.txt` 改坏，程序能检测到并自动重新采集** |
 | 汇总模块 | `summarize.*`（`base_url` / `api_key_env` / `model` / `template`） | 调 OpenAI 兼容接口生成「摘要 + 章节大纲 + 要点」。`TaskStatus.SUMMARIZING` **枚举值已存在但无实现**。注意 `PLAN.md` §11.4 的未验证项：一条 20 分钟视频转写稿约 8000–10000 字，**是否超上下文、单条成本多少，未测** |
 
 **阶段 4 的两个设计前提**（别推翻）：
@@ -210,9 +214,11 @@ packaging/            # vidnote-worker.spec + tauri.bundle.json（overlay，刻�
 
 | 提交 | 内容 |
 |---|---|
-| （未提交） | 抖音 cookie 失败翻译（D6）+ `tools/refresh_cookies.py` 过渡脚本 + fetcher 自测 7 条 |
+| （本次文档同步） | IPC 规格 v1.2（终态推送语义更正）+ PRD D6/FR-2/FR-9 现状对齐 |
+| `9c202fe` | PLAN §9.5 补「无 cookie 解析抖音」实测判死（ttwid 可匿名签发但 Argus 指纹层拦截） |
+| `7175712` | 抖音 cookie 失败翻译（D6）+ `tools/refresh_cookies.py` 过渡脚本 + fetcher 自测 7 条 |
 | `8d9d51f` | 修「批次失败后整批卡死」：终态跃迁补推 `pipeline_state` + abort 恢复链（自测 53→66） |
-| `bb2086f` | 应用改名 `app-ui` → `Vidnote`；PRD、工程约定、handoff 入库 |
+| `d7193e8` | 应用改名 `app-ui` → `Vidnote`；PRD、工程约定、handoff 入库 |
 | `802685d` | 一键构建 `dev.sh` + **NSIS 判死**（改走 MSI） |
 | `dff9403` | 打包链路：PyInstaller 单目录 + Tauri `resources`，冒烟 28/28 |
 | `cb31b13` | 关闭确认 + 优雅关闭 30 s / 行右键菜单 / 231 可操作提示 |
