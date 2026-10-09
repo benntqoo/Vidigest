@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from app.core.errors import StageError, TaskCancelled, raise_if_cancelled
+from app.core.errors import CookieExpired, StageError, TaskCancelled, raise_if_cancelled
 from app.core.ffmpeg_locator import find_ffmpeg
 from app.core.proc import kill_process
 from app.models.config import Config
@@ -45,10 +45,24 @@ _PROGRESS_RE = re.compile(r"\[download\]\s+([\d.]+)%")
 #: yt-dlp 完成行（用来把进度顶到 100%）
 _PROGRESS_DONE_RE = re.compile(r"\[download\]\s+100(?:\.0)?%")
 
+#: yt-dlp 的 cookie 类失败特征。2026-10-10 实测抖音原文：
+#: "ERROR: [Douyin] <id>: Fresh cookies (not necessarily logged in) are needed"
+_COOKIE_ERROR_RE = re.compile(r"fresh cookies|cookies (?:may be|are) stale", re.IGNORECASE)
+
 INSTALL_HINT = "pip install -U yt-dlp   （或 winget install yt-dlp.yt-dlp）"
 
 #: 探测下载耗时的超时。yt-dlp 偶发卡在网络握手，不能让它挂死整个流水线。
 _DEFAULT_SOCKET_TIMEOUT = 30
+
+
+def cookie_hint(configured: str | None) -> str:
+    """cookie 失败的可操作提示。PRD D6：错误提示**首行即动作**。"""
+    return (
+        f"重新采集抖音 cookie：python tools/refresh_cookies.py，并确认 config.yaml 的 "
+        f"paths.cookies_file 指向生成的 cookies.txt（当前：{configured or '未配置'}）。\n"
+        "原因：抖音对匿名请求也要求新鲜 cookie（ttwid 约 24 小时过期），"
+        "缺失或过期时 yt-dlp 必然失败。自动重取属阶段 4（cookie.auto_refresh），尚未实现。"
+    )
 
 
 # ---------------------------------------------------------------- 定位
@@ -199,9 +213,16 @@ def _download_remote(
     task: Task,
     out: Path,
     cfg: Config,
-    on_progress: Callable[[str, float], None] | None,
+    on_progress: Callable[[str, float], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> DownloadResult:
+    cookies = cfg.paths.cookies_file
+    if task.platform == "douyin" and not (cookies and Path(cookies).is_file()):
+        # 抖音对匿名请求也要求新鲜 cookie（ttwid），缺了 yt-dlp 必失败——
+        # 预检直接给出可操作提示，省一次注定失败的网络往返（还占风控配额）。
+        # 放在 find_yt_dlp 之前：这条失败与 yt-dlp 是否安装无关。
+        raise CookieExpired(cookie_hint(cookies))
+
     yt_dlp = find_yt_dlp(cfg.paths.yt_dlp)
 
     # 限速：`--limit-rate` 只接字节单位，按 10 条/分钟的大致估算给出软上限。
@@ -272,6 +293,10 @@ def _download_remote(
         code = proc.wait()
 
     if code != 0:
+        # cookie 类失败翻译成可操作提示（PRD D6）：配了但已过期时 yt-dlp
+        # 会如实报原文，用户看不出「下一步该做什么」。
+        if any(_COOKIE_ERROR_RE.search(line) for line in tail):
+            raise CookieExpired(cookie_hint(cfg.paths.cookies_file))
         detail = "\n".join(f"  {l}" for l in tail)
         raise StageError(
             "download",

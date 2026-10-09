@@ -194,6 +194,8 @@ cmd_check() {
   run "$PY" "$REPO/tools/rpc_smoke.py"
   step "调度层 —— tools/dispatcher_selftest.py"
   run "$PY" "$REPO/tools/dispatcher_selftest.py"
+  step "下载层 —— tools/fetcher_selftest.py"
+  run "$PY" "$REPO/tools/fetcher_selftest.py"
   step "Rust 单测 —— cargo test --lib"
   ( cd "$REPO/app-ui/src-tauri" || exit 1; run env CARGO_INCREMENTAL=0 cargo test --lib )
   step "前端类型检查 —— tsc --noEmit"

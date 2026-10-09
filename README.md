@@ -91,6 +91,8 @@ Vidnote/
 │   ├── rpc_smoke.py         #   IPC 协议冒烟测试（19 条判据，不依赖 Rust 端）
 │   ├── dispatcher_selftest.py   # 调度器语义自测（66 条判据，假阶段函数，秒级跑完）
 │   ├── phase2_acceptance.py     # 阶段 2 正式验收（23 条判据，真跑 GPU）
+│   ├── fetcher_selftest.py      # 下载层自测（7 条：cookie 失败翻译，纯逻辑不联网）
+│   ├── refresh_cookies.py       # 手动刷新抖音 cookie（阶段 4 自动化前的过渡）
 │   ├── build_worker.py      #   PyInstaller 构建 + 28 项冒烟（含真实推理验证 GPU）
 │   └── capture_window.py    #   窗口截图（自动化点击前必做 WindowFromPoint 归属自检）
 ├── models/                  # 模型权重目录（内容不入库，需自行下载）
@@ -262,7 +264,7 @@ Windows 上从 cmd / PowerShell 调要写成 `bash dev.sh release`。
 2. `ctranslate2.get_cuda_device_count() == 1` **不代表 GPU 可用**，只代表检测到硬件。真正的验证是跑一次真实推理。
 3. **faster-whisper 1.2.1 与 av 19 不兼容**（`metadata_errors` 已移除）—— 绕开 PyAV，用 `wave` + `numpy` 直读 wav。
 4. **ffmpeg 9.0 移除了 `-vsync`** —— 改用 `-fps_mode passthrough`。
-5. **yt-dlp 读浏览器 cookie 在 Windows 新版浏览器上必失败** —— 走 playwright-cli 导出 storage-state 再转 Netscape 格式。
+5. **yt-dlp 读浏览器 cookie 在 Windows 新版浏览器上必失败** —— 走 playwright-cli 导出 storage-state 再转 Netscape 格式（过渡脚本 `python tools/refresh_cookies.py`；抖音**匿名也要求**新鲜 cookie，ttwid 约 24 小时过期，缺失时任务会以可操作提示失败）。
 6. Playwright 自带的 ffmpeg 是 `--disable-everything` 构建，**没有 mp4 demuxer**，不能用。
 7. **WinGet `Links/` 下的 `ffmpeg.exe` 是 0 字节占位文件**（app execution alias）——`shutil.which()` 能命中，但调用会报 `[WinError 193] 不是有效的 Win32 应用程序`。定位时必须校验「非空 + PE 头 `MZ`」，真实可执行在 `WinGet/Packages/Gyan.FFmpeg_*/`。
 8. **`initial_prompt` 会改变分段与标点**，不只是纠术语——同一音频加了它从 681 段碎句变 662 段整句带标点。它是影响验收判据的强参数，必须随基线一起记录。

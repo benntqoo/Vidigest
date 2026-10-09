@@ -10,6 +10,9 @@ paths:
   # 留空则按 PLAN.md §9.4 的顺序自动定位；显式指定可跳过搜索
   # 本机实测有效值：
   ffmpeg: null
+  # Netscape 格式 cookies.txt（抖音必须：匿名也要求新鲜 cookie，ttwid 约 24 小时过期）
+  # 生成：python tools/refresh_cookies.py（需 playwright-cli）；留空 = 不带 cookie 下载
+  cookies_file: null
 
 runtime:
   device: "auto"            # auto | cuda | cpu。auto 会实测一次推理来判断 CUDA 是否真可用

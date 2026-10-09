@@ -12,7 +12,7 @@
 ```bash
 cd D:/Code/SideProject/Vidnote
 
-./dev.sh check      # 协议层 19 + 调度层 66 + cargo test 20 + tsc —— 全部不用 GPU，秒~分钟级
+./dev.sh check      # 协议层 19 + 调度层 66 + 下载层 7 + cargo test 20 + tsc —— 全部不用 GPU，秒~分钟级
 ./dev.sh dev        # 开发模式起 GUI（需要 vite；首次先 cd app-ui && npm install）
 ./dev.sh release    # 一条命令出 MSI（约 5 分钟，含 PyInstaller 复用 + Tauri 编译 + WiX）
 ./dev.sh --help     # 其余子命令：bundle-dev / worker / clean
@@ -57,6 +57,7 @@ Windows Terminal / PowerShell）。详见 `docs/工程约定.md` 的 231 条目�
 | 流水线重叠 | 系数 **1.10×**（>1.0 即阶段确实重叠），转写峰值并发 **1** | 同上；**1.10× 低是物理事实，不是 bug** |
 | IPC 协议 | **19/19** | `python tools/rpc_smoke.py` |
 | 调度层自测（假阶段函数） | **66/66**，秒级，不需 GPU | `python tools/dispatcher_selftest.py` |
+| 下载层自测（cookie 失败翻译） | **7/7**，纯逻辑不联网 | `python tools/fetcher_selftest.py` |
 | Rust 单测 | **20/20** | `cargo test --lib`（`app-ui/src-tauri`） |
 | 打包链路 | 28 项冒烟，**含真实推理验证 GPU** | `python tools/build_worker.py` |
 | 安装包 | `Vidnote_0.1.0_x64_en-US.msi` **1.45 GiB**，exit 0 | `./dev.sh release` |
@@ -102,13 +103,14 @@ Windows Terminal / PowerShell）。详见 `docs/工程约定.md` 的 231 条目�
 | 批量性能验收 | 阶段 2 只测了 **10 条 × 60 秒** | `PLAN.md` §10 要求「10 条 20 分钟的总耗时 ≤ 单条 × 10 的 60%」——**未按原判据验证过**，60 秒片段的 1.10× 重叠系数不能外推 |
 | 内存峰值 ≤ 可用内存 80% | 同上 | `PLAN.md` §10 |
 | 心跳在**转写进行中**是否仍通 | **刻意不测就不敢改** | 只测过空闲态往返（0 ms）。若转写阻塞主循环，UI 会假死 —— 而这关系到**心跳判死分支要不要杀进程**（`PLAN.md` §11.7） |
+| **`tools/refresh_cookies.py` 首跑** | 本机没装 playwright-cli，`open`→`state-save` 时序按 PLAN §9.5 的记录实现，未实测 | `npm i -g @playwright/cli` → `python tools/refresh_cookies.py` → 产出含 `ttwid` 的 cookies.txt → 配 `paths.cookies_file` → 抖音链接下载成功 |
 
 ### P2 — 验收清单上还没实现的功能
 
 | 项 | 现状 |
 |---|---|
 | **磁盘余量护栏**（低于 5 GB 停止取新任务并告警） | ❌ **未实现**，目前只有内存护栏。`env_probe.py` 只做探测/上报，没有调度侧拦截 |
-| **cookie 失效可操作提示** | ❌ 未实现。现在只有 `cookies 文件不存在：...` 这一句 |
+| **cookie 失效可操作提示** | 🟡 **2026-10-10 已做失败翻译**：抖音缺/过期 cookie → `CookieExpired`，错误首行即动作（PRD D6）；预检在 `find_yt_dlp` 之前。**自动重取仍属阶段 4**。过渡脚本 `tools/refresh_cookies.py` **未验证**（本机没装 playwright-cli，`open`/`state-save` 序列按 PLAN §9.5 记录实现）—— 见 §3 P1 |
 | **GPU 被占满时降级到 CPU 或等待** | ❌ 未验。`verify_cuda` 会如实报不可用，但没有「显存不足 → 降级/排队」的策略 |
 | **ffmpeg 缺失启动即报错并给安装命令** | 🟡 部分。`ffmpeg_locator.py` 已在**定位时**校验「非空 + `PE` 头」，但「启动即报错」的行为未专门验 |
 | 「粘贴抖音原始分享文案（含干扰码）」的独立判据 | 🟡 `app/core/urls.py` 实现完整（多平台 + 短链 + 长链），但**没有独立自测**，只在验收脚本里被间接用到 |
@@ -208,7 +210,8 @@ packaging/            # vidnote-worker.spec + tauri.bundle.json（overlay，刻�
 
 | 提交 | 内容 |
 |---|---|
-| （未提交） | 修「批次失败后整批卡死」：终态跃迁补推 `pipeline_state` + abort 恢复链（自测 53→66） |
+| （未提交） | 抖音 cookie 失败翻译（D6）+ `tools/refresh_cookies.py` 过渡脚本 + fetcher 自测 7 条 |
+| `8d9d51f` | 修「批次失败后整批卡死」：终态跃迁补推 `pipeline_state` + abort 恢复链（自测 53→66） |
 | `bb2086f` | 应用改名 `app-ui` → `Vidnote`；PRD、工程约定、handoff 入库 |
 | `802685d` | 一键构建 `dev.sh` + **NSIS 判死**（改走 MSI） |
 | `dff9403` | 打包链路：PyInstaller 单目录 + Tauri `resources`，冒烟 28/28 |
