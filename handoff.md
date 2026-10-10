@@ -138,11 +138,13 @@ Windows Terminal / PowerShell）。详见 `docs/工程约定.md` 的 231 条目�
 这一步不做，后面每一项界面改动都还在「无证据」状态里叠加。
 
 > 2026-10-10 已把 12 步清单 + 进程树基线命令 + 收尾模板写进 §7.8，照抄即可。
-> ✅ **解释器已配好（2026-10-10）**：原先开发期无人设 `VIDNOTE_PYTHON`，会落到 PATH 兜底、
-> 命中 `C:\Python313\python.exe`（无 faster-whisper）⇒ worker 必挂。现已加**两道本机保险**
+> ✅ **解释器已配好且已实测定案（2026-10-10）**：原先开发期无人设 `VIDNOTE_PYTHON`，会落到 PATH
+> 兜底、命中 `C:\Python313\python.exe`（无 faster-whisper）⇒ worker 必挂。现已加**两道本机保险**
 > （都在 `.gitignore` 内）：① `app-ui/src-tauri/.cargo/config.toml` 的 `[env] VIDNOTE_PYTHON`；
-> ② 仓库根 `.venv` junction → 托管 venv。**直接 `npm run tauri dev` 即可**，不必再设变量；
-> 看日志区 `已启动：…` 全文可知哪条生效。背景与删除注意事项见 `docs/阶段3_界面确认.md` §7.8。
+> ② 仓库根 `.venv` junction → 托管 venv。**直接 `npm run tauri dev` 即可**，不必再设变量。
+> **实测结果：保险 1 生效** —— 读 `vidnote.exe` 的进程环境变量，确有 `VIDNOTE_PYTHON`、而 PATH 无
+> venv，并有 `CARGO_*` 三个变量 ⇒ 确认宿主由 `cargo run` 启动（与 tauri-cli v2 源码一致）。
+> 背景与删除注意事项见 `docs/阶段3_界面确认.md` §7.8「第 4 步的解释器陷阱」。
 > **本机前置已在沙箱内验完**（不必重做）：`node_modules`/`vite`、`build/pyinstaller/vidnote-worker/`、
 > `models/large-v3/`、`cargo test --lib` **20/20**。唯一预料之外的耗时是 `target/debug/` 为空
 > ⇒ 第 4 步 `npm run tauri dev` 需先编译 debug 版 Rust（数分钟）。
@@ -229,7 +231,7 @@ packaging/            # vidnote-worker.spec + tauri.bundle.json（overlay，刻�
 | 项 | 值 / 注意 |
 |---|---|
 | Python 解释器 | **必须显式**：`C:/Users/Ben/.workbuddy/binaries/python/envs/default/Scripts/python.exe` —— 托管/系统 3.13 **都没** faster-whisper。`dev.sh` 用「能不能 `import faster_whisper`」挑解释器 |
-| Rust 找 Python | `VIDNOTE_PYTHON` → `<repo>/.venv/Scripts/python.exe` → PATH。⚠️ **仓库里没有任何脚本设置它**（2026-10-10 复核）⇒ 原先落到 PATH 兜底、命中 `C:\Python313\`（**无 faster-whisper**）而必挂。**已加两道本机保险**：① `app-ui/src-tauri/.cargo/config.toml` 的 `[env] VIDNOTE_PYTHON`；② 仓库根 `.venv` junction → 托管 venv（都在 `.gitignore` 内，换机器需重建）。**打包产物不受影响**（sidecar 自带运行时）。详见 `docs/阶段3_界面确认.md` §7.8 |
+| Rust 找 Python | `VIDNOTE_PYTHON` → `<repo>/.venv/Scripts/python.exe` → PATH。⚠️ **仓库里没有任何脚本设置它**（2026-10-10 复核）⇒ 原先落到 PATH 兜底、命中 `C:\Python313\`（**无 faster-whisper**）而必挂。**已加两道本机保险**：① `app-ui/src-tauri/.cargo/config.toml` 的 `[env] VIDNOTE_PYTHON`；② 仓库根 `.venv` junction → 托管 venv（都在 `.gitignore` 内，换机器需重建）。**2026-10-10 实测：保险 ① 生效**（`VIDNOTE_PYTHON` 出现在 `vidnote.exe` 进程环境里、PATH 无 venv）+ 「`tauri dev` 走 `cargo run`」已由父进程与源码双证。**打包产物不受影响**（sidecar 自带运行时）。详见 `docs/阶段3_界面确认.md` §7.8 |
 | MSVC | ⚠️ 本机 VS 2022 的 MSVC **14.44 缺 `include`**；已用项目级 `.cargo/config.toml`（**已 gitignore、本机专用**）钉死 VS 2019 BuildTools。**删掉它本机编不过任何含 C/C++ 的 crate** |
 | 模型 | `models/large-v3/`（2.87 GB，**不入库**，只下一次） |
 | ffmpeg | WinGet 装的 `Links/ffmpeg.exe` 是 **0 字节占位**，定位时必须校验「非空 + PE 头」 |
