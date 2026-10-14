@@ -1,4 +1,4 @@
-//! Vidnote 桌面端宿主（Tauri 2）。
+//! Vidigest 桌面端宿主（Tauri 2）。
 //!
 //! 架构：本进程是 **UI + 监督器**，全部重活由常驻 Python worker 承担（`PLAN §7.1`）。
 //! 两者之间是 stdin/stdout 的 JSON Lines 协议，零端口，契约见 `docs/IPC协议规格.md`。

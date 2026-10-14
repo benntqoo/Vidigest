@@ -45,7 +45,7 @@ from typing import Any, Callable, Iterable
 
 from app.core import env_probe, pipeline
 from app.core.concurrency import Concurrency
-from app.core.errors import FatalEnvironmentError, TaskCancelled, VidnoteError
+from app.core.errors import FatalEnvironmentError, TaskCancelled, VidigestError
 from app.core.store import Store
 from app.models.config import Config
 from app.models.task import Task, TaskStatus
@@ -615,7 +615,7 @@ class Dispatcher:
             self._mark_failed(task, str(exc))
             self._abort(str(exc))
             ok = False
-        except VidnoteError as exc:
+        except VidigestError as exc:
             logging.warning("任务 %s 失败：%s", task.id, exc)
             self._mark_failed(task, str(exc))
             ok = False

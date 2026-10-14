@@ -1,4 +1,4 @@
-# Vidnote — 属性规则
+# Vidigest — 属性规则
 # 目的：保证 samples/ 下的回归基线跨机器、跨检出一致。
 # 阶段 1 的验收判据是「产出与 samples/transcript_gpu.txt 逐字符严格相等」，
 # 任何换行符转换都会直接污染这条基线。

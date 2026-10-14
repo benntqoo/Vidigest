@@ -1006,7 +1006,7 @@ fn hint_for_spawn_error(code: Option<i32>) -> Option<&'static str> {
              安全软件/沙箱拦截也会表现为 5。",
         ),
         Some(ERR_FILE_NOT_FOUND) => Some(
-            "找不到解释器(2)：确认路径存在，或用环境变量 VIDNOTE_PYTHON 显式指定。",
+            "找不到解释器(2)：确认路径存在，或用环境变量 VIDIGEST_PYTHON 显式指定。",
         ),
         _ => None,
     }

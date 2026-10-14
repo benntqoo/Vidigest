@@ -1,6 +1,6 @@
-# Vidnote — 开发计划书
+# Vidigest — 开发计划书
 
-> **项目**：Vidnote（Video → Note）批量视频内容提取与结构化汇总工具
+> **项目**：Vidigest（Video → Digest；~~原名 Vidnote（Video → Note）~~ 于 2026-10-14 改名）批量视频内容提取与结构化汇总工具
 > **仓库**：`D:/Code/SideProject/Vidnote`
 > **阶段**：阶段 1 进行中（Python 功能层基础设施已完成，见 §4 目录树的 ✓ 标记）
 >
@@ -180,7 +180,7 @@ def plan_concurrency(cfg, env):
 ## 4. 模块划分
 
 ```
-Vidnote/                                  # 仓库根
+Vidnote/                                  # 仓库根（**目录名未随应用改名**，故意不动）
 ├── app/                                  # ★Python 功能层（阶段 1 起填充）
 │   ├── core/
 │   │   ├── env_probe.py                  #   ✓已完成  硬件探测 ← tools/probe_env.py
@@ -345,7 +345,7 @@ cookie:
   auto_refresh: true
 ```
 
-**`summarize.api_key` 不进 yaml**：实现时改为读环境变量 `VIDNOTE_API_KEY`，yaml 里只留 `api_key_env: "VIDNOTE_API_KEY"`。避免密钥随配置文件被误提交。
+**`summarize.api_key` 不进 yaml**：实现时改为读环境变量 `VIDIGEST_API_KEY`，yaml 里只留 `api_key_env: "VIDIGEST_API_KEY"`。避免密钥随配置文件被误提交。（~~`VIDNOTE_API_KEY`~~ 于 2026-10-14 改名）
 
 > 可运行的配置模板见仓库根目录 `config.example.yaml`（含实测有效值与逐项注释）。
 
@@ -630,11 +630,11 @@ URL_PATTERNS = {
   我们要保护的那次 `state.db` 写入）。无任务在跑时仍走原来的快速路径
 - ~~⚠️ **本机 Windows 会话存在环境级故障**：创建不了 stdin 管道（`os error 231`），
   任何「spawn 子进程并 pipe stdin」的 Rust 程序都起不来（`tauri dev` 自己也起不来）。
-  **与 Vidnote 无关**，但**阻断一切运行验证**~~ → ✅ **2026-10-04 定位并更正**：
+  **与 Vidigest 无关**，但**阻断一切运行验证**~~ → ✅ **2026-10-04 定位并更正**：
   **不是 Windows 故障，是 AI 工具自带沙箱 `tsbx.dll` 注入了工具启动的进程**，
   拦截命名管道「客户端读方向」的打开（返回伪 `STATUS_PIPE_BUSY` → `231`）。
   重启系统**实测无效**。影响面仅限**工具沙箱进程树内**（`chrome` / `explorer` / `WorkBuddy` 主进程
-  均无该 DLL）；**Vidnote 代码本身没有问题**。证据与推演见 `docs/阶段3_界面确认.md` §7.7，
+  均无该 DLL）；**Vidigest 代码本身没有问题**。证据与推演见 `docs/阶段3_界面确认.md` §7.7，
   可复跑判据：`python tools/probe_spawn_env.py`。**待办**：在**沙箱外的终端**复跑一次以最终闭环
   （~~把 231 翻译成可操作提示~~ → ✅ 2026-10-04 已完成，见 §12）
 - **仍未复验**：故障态那 2 处修复的渲染 —— 需要在沙箱外启动应用才能补做。
@@ -659,7 +659,7 @@ URL_PATTERNS = {
   ~~产物作为 Tauri 的 `externalBin` sidecar 随包分发~~
   → **2026-10-04 更正**：`externalBin` **只支持单文件**，配单目录会产出
   「打包成功、运行才缺 DLL」的包。实际走 **`bundle.resources` 的目录映射**
-  （`{"../../build/pyinstaller/vidnote-worker": "worker"}`），相对层级由
+  （`{"../../build/pyinstaller/vidigest-worker": "worker"}`），相对层级由
   `tauri-utils` 的 Walk 分支保真（**读实现核过，不是文档说法**）。见 `docs/打包与分发.md`
 - **Rust 侧**：Tauri bundler 出平台安装包 → **实际只出 MSI**（NSIS 不可用，见下）
 - 验收：在**没装 Python、也没装 Rust** 的机器上双击能启动（同机模拟）
@@ -813,7 +813,7 @@ add_nvidia_dll_dirs()
 表现是「点了开始，任务永远停在 0%」。代价：`ready` 晚约 2 s。
 
 **这条同时留下三个诊断开关**（默认关闭，见 `docs/打包与分发.md` §7.4）：
-`VIDNOTE_FAULTHANDLER=<秒>` / `VIDNOTE_IMPORT_PROBE=1` / `VIDNOTE_LOG_STDERR=1`。
+`VIDIGEST_FAULTHANDLER=<秒>` / `VIDIGEST_IMPORT_PROBE=1` / `VIDIGEST_LOG_STDERR=1`。
 **机制至今未查明**（只有现象与对照），所以换 PyInstaller 版本时必须重跑一次 probe。
 
 **定位流程**（顺序不能反，前一步做不到就上后一步）：
@@ -942,9 +942,9 @@ add_nvidia_dll_dirs()
   不编一句听起来合理的话。判据 `tests::pipe_busy_231_is_translated_into_an_actionable_first_line`
 - ~~阶段 3 末期做一次「PyInstaller 打包 + Tauri sidecar」的最小验证（`bundle.externalBin`）~~
   → ✅ **已完成（2026-10-04），但方案换成 `bundle.resources`**（`externalBin` 只支持单文件）。
-  产物 `build/pyinstaller/vidnote-worker/`；构建+校验脚本 `tools/build_worker.py`
+  产物 `build/pyinstaller/vidigest-worker/`；构建+校验脚本 `tools/build_worker.py`
   （前置校验 / 打包 / 产物校验 / 冒烟四段，每段自己报告判据）；详见 `docs/打包与分发.md`。
-  **沙箱外待验**：`VIDNOTE_BUNDLED=1 npm run tauri dev`（L1，验 sidecar 定位）
+  **沙箱外待验**：`VIDIGEST_BUNDLED=1 npm run tauri dev`（L1，验 sidecar 定位）
   与完整 NSIS 安装包（L2，验分发形态）
 
 > ~~建议在阶段 3 末期就做一次「PyInstaller 打包 + Tauri sidecar」的最小验证，

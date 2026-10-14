@@ -7,7 +7,7 @@
     ... tools/build_worker.py --skip-smoke    # 打包但不冒烟
     ... tools/build_worker.py --timeout-verify 600
 
-产物：`build/pyinstaller/vidnote-worker/vidnote-worker.exe`
+产物：`build/pyinstaller/vidigest-worker/vidigest-worker.exe`
 
 **为什么需要脚本而不是直接跑 pyinstaller**：
 PyInstaller 的「成功」只代表**收集流程**没报错。它不会告诉你
@@ -45,12 +45,12 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-SPEC = REPO / "packaging" / "vidnote-worker.spec"
+SPEC = REPO / "packaging" / "vidigest-worker.spec"
 DIST = REPO / "build" / "pyinstaller"
 WORKDIR = REPO / "build" / "pyinstaller-work"
-#: 与 spec 里的 `name="vidnote-worker"` 一致
-OUT_DIR = DIST / "vidnote-worker"
-EXE = OUT_DIR / "vidnote-worker.exe"
+#: 与 spec 里的 `name="vidigest-worker"` 一致
+OUT_DIR = DIST / "vidigest-worker"
+EXE = OUT_DIR / "vidigest-worker.exe"
 
 #: (导入名, 发行名, 版本下限)。导入名与发行名不一致是 PyPI 常态，别混用。
 DEPS: list[tuple[str, str, str | None]] = [
@@ -333,7 +333,7 @@ class Smoke:
         mirror_logs_to_stderr: bool = False,
     ) -> None:
         env = dict(os.environ)
-        env["VIDNOTE_CONFIG"] = str(cfg)
+        env["VIDIGEST_CONFIG"] = str(cfg)
         # 与 Rust 侧 spawn 时的三件套保持一致（`worker/mod.rs::build_command`）
         env["PYTHONUTF8"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
@@ -343,7 +343,7 @@ class Smoke:
             # 默认日志**只走 `log` 事件**（见 `rpc.py::_install_logging`）。
             # 出问题时打开镜像：stderr 带上时间戳，能看出「卡在哪一条之后」——
             # 这是排查挂起的唯一一手材料，而挂起恰恰没有异常可看。
-            env["VIDNOTE_LOG_STDERR"] = "1"
+            env["VIDIGEST_LOG_STDERR"] = "1"
         self.proc = subprocess.Popen(
             argv,
             cwd=str(cwd),
@@ -426,7 +426,7 @@ def smoke_artifacts(
     timeout_ready: float, timeout_verify: float, mirror_logs: bool = False
 ) -> tuple[list[tuple[bool, str]], bool]:
     rows: list[tuple[bool, str]] = []
-    with tempfile.TemporaryDirectory(prefix="vidnote-smoke-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="vidigest-smoke-") as tmp:
         tmp_path = Path(tmp)
         # 模型**不打进包**（3 GB），所以把 model_dir 指回仓库；
         # work_dir 指到临时目录，避免污染真实产出。
@@ -441,7 +441,7 @@ def smoke_artifacts(
             encoding="utf-8",
         )
         print("\n---- 冒烟 ----")
-        print(f"  VIDNOTE_CONFIG={cfg}")
+        print(f"  VIDIGEST_CONFIG={cfg}")
 
         sm = Smoke([str(EXE)], cfg, OUT_DIR, mirror_logs)
         try:
@@ -460,7 +460,7 @@ def smoke_artifacts(
                         f"config_is_default={data.get('config_is_default')}",
                     )
                 )
-                # 打包运行时配置必须来自 VIDNOTE_CONFIG 指定的那份，
+                # 打包运行时配置必须来自 VIDIGEST_CONFIG 指定的那份，
                 # 不能回落到「默认配置」（那意味着 config 没被读到）
                 rows.append(
                     (
@@ -561,7 +561,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n=== 总结：{passed}/{len(smoke_rows)} 冒烟判据通过 ===")
         return 0 if smoke_ok else 1
 
-    print("=== Vidnote worker 打包 ===")
+    print("=== Vidigest worker 打包 ===")
     checks, ok = run_checks()
     if not ok:
         print("\n⇒ 前置校验未通过，**不打包**。上面的 FAIL 就是原因。")

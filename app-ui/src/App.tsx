@@ -211,7 +211,7 @@ function App() {
   return (
     <div className="app">
       <header className="toolbar">
-        <span className="brand">Vidnote</span>
+        <span className="brand">Vidigest</span>
         <AddTasksBar
           disabled={!busy}
           onSubmit={(text) => {

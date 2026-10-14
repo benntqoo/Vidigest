@@ -12,7 +12,7 @@
 |---|---|---|
 | `app_root()` | `Path.cwd()`（= 仓库根） | `app_data_dir()` |
 | `program_dir()` | `Path.cwd()` | exe 所在目录（**只读**） |
-| `app_data_dir()` | `Path.cwd()` | `%LOCALAPPDATA%/Vidnote` |
+| `app_data_dir()` | `Path.cwd()` | `%LOCALAPPDATA%/Vidigest` |
 
 `app_root()` 是**唯一**用于锚定 `config.yaml` / `work_dir` / `model_dir` 的锚点。
 判据见 `docs/打包与分发.md`。
@@ -29,10 +29,10 @@ from app.models.config import DEFAULT_CONFIG_NAME
 
 #: 打包运行时的数据目录名（放在 `%LOCALAPPDATA%` 下）。
 #: 与 Tauri 的 `productName` 无关 —— 改名只影响用户已有的数据目录位置。
-APP_DIR_NAME = "Vidnote"
+APP_DIR_NAME = "Vidigest"
 
 #: 显式指定 `config.yaml` 路径的环境变量（Rust 宿主也用它）。
-CONFIG_ENV_VAR = "VIDNOTE_CONFIG"
+CONFIG_ENV_VAR = "VIDIGEST_CONFIG"
 
 
 def is_frozen() -> bool:
@@ -94,7 +94,7 @@ def ensure_default_config(path: Path | None = None) -> tuple[Path, bool]:
 def resolve_config_path() -> str | None:
     """决定 `config.yaml` 从哪读。**源码运行与打包运行的差别只在这一个函数里。**
 
-    优先级：`VIDNOTE_CONFIG` 环境变量 → 打包时数据目录下的 `config.yaml` → `None`。
+    优先级：`VIDIGEST_CONFIG` 环境变量 → 打包时数据目录下的 `config.yaml` → `None`。
 
     返回 `None` 表示「交给 `Config.load_or_default` 的原有逻辑」——
     即 cwd 下的 `config.yaml`，**与改造前逐字一致**（阶段 1/2 的判据依赖这一点）。

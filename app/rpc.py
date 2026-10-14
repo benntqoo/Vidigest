@@ -15,7 +15,7 @@
 翻译成 `task_update` 事件。
 
 由 Rust 侧以 `python -m app.rpc` 方式启动，cwd 应为项目根目录。
-可用环境变量 `VIDNOTE_CONFIG` 指定配置文件路径（不通过 argv——argv 属于 cli.py）。
+可用环境变量 `VIDIGEST_CONFIG` 指定配置文件路径（不通过 argv——argv 属于 cli.py）。
 """
 
 from __future__ import annotations
@@ -245,13 +245,13 @@ class Worker:
         一次是被 Rust 标成 `debug` 的 stderr 原文。日志区会整体重复一遍，
         且第二份的级别是错的。
 
-        `VIDNOTE_LOG_STDERR=1` 可打开镜像，便于在不开 UI 的情况下直接看 worker 输出。
+        `VIDIGEST_LOG_STDERR=1` 可打开镜像，便于在不开 UI 的情况下直接看 worker 输出。
         未捕获异常的 traceback 不受影响 —— 那由解释器的 excepthook 直接写 stderr。
         """
         root = logging.getLogger()
         root.setLevel(logging.INFO)
 
-        want_stderr = os.environ.get("VIDNOTE_LOG_STDERR", "").strip().lower() not in (
+        want_stderr = os.environ.get("VIDIGEST_LOG_STDERR", "").strip().lower() not in (
             "",
             "0",
             "false",
@@ -627,7 +627,7 @@ class Worker:
 
 
 def _maybe_enable_faulthandler() -> None:
-    """`VIDNOTE_FAULTHANDLER=<秒>` 时，定期把所有线程的栈打到 stderr。
+    """`VIDIGEST_FAULTHANDLER=<秒>` 时，定期把所有线程的栈打到 stderr。
 
     **为什么非它不可**：原生调用（`LoadLibrary`、CUDA 运行库初始化）卡住时，
     Python 层**没有任何日志可打** —— 打点只会停在卡住之前的最后一步。
@@ -636,15 +636,15 @@ def _maybe_enable_faulthandler() -> None:
     `faulthandler` 是 CPython 自带、能在卡死时给出**真实栈帧**的唯一手段。
 
     默认关闭（它定期往 stderr 写，不该进正常路径）；
-    需要时 `set VIDNOTE_FAULTHANDLER=20`。
+    需要时 `set VIDIGEST_FAULTHANDLER=20`。
     """
-    raw = os.environ.get("VIDNOTE_FAULTHANDLER", "").strip()
+    raw = os.environ.get("VIDIGEST_FAULTHANDLER", "").strip()
     if not raw:
         return
     try:
         delay = float(raw)
     except ValueError:
-        logging.warning("VIDNOTE_FAULTHANDLER 不是数字：%r，忽略", raw)
+        logging.warning("VIDIGEST_FAULTHANDLER 不是数字：%r，忽略", raw)
         return
     try:
         import faulthandler
@@ -656,7 +656,7 @@ def _maybe_enable_faulthandler() -> None:
 
 
 def _maybe_run_import_probe() -> None:
-    """`VIDNOTE_IMPORT_PROBE=1` 时，在主线程把关键原生依赖**逐个** import 并报耗时。
+    """`VIDIGEST_IMPORT_PROBE=1` 时，在主线程把关键原生依赖**逐个** import 并报耗时。
 
     **为什么需要**：原生 import 卡死时，普通打点只能告诉你「卡在 import 区间」。
     实测 2026-10-04：打包产物里 `_verify_env` **子线程**的 `import numpy`
@@ -666,7 +666,7 @@ def _maybe_run_import_probe() -> None:
       · probe 里同样卡住    → 与线程无关，是打包本身的问题。
     每步都**立即**上报，所以卡住时最后一条日志就是答案。
     """
-    if os.environ.get("VIDNOTE_IMPORT_PROBE", "").strip().lower() not in ("1", "true", "yes"):
+    if os.environ.get("VIDIGEST_IMPORT_PROBE", "").strip().lower() not in ("1", "true", "yes"):
         return
 
     import importlib

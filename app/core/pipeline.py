@@ -45,7 +45,7 @@ from app.core.errors import (
     FatalEnvironmentError,
     StageError,
     TaskCancelled,
-    VidnoteError,
+    VidigestError,
 )
 from app.core.store import Store
 from app.models.config import Config
@@ -100,7 +100,7 @@ def run_one(
         raise
     except TaskCancelled:
         _fail(task, store, "已取消", on_stage)
-    except VidnoteError as exc:
+    except VidigestError as exc:
         # 下载 / 抽音频 / 抽帧 —— 只影响当前这条
         logging.warning("任务 %s 失败：%s", task.id, exc)
         _fail(task, store, str(exc), on_stage)

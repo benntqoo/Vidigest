@@ -50,7 +50,7 @@ ffmpeg 未安装时：{FFMPEG_HINT}
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app.cli",
-        description="Vidnote — 批量视频转结构化文稿",
+        description="Vidigest — 批量视频转结构化文稿",
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -124,7 +124,7 @@ def cmd_env(args: argparse.Namespace) -> int:
 
     report = env_probe.probe(cfg.work_path())
     print("=" * 62)
-    print("Vidnote 环境自检")
+    print("Vidigest 环境自检")
     print("=" * 62)
 
     cpu = report.cpu
@@ -400,7 +400,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 def _load_config(args: argparse.Namespace) -> tuple[Config, bool]:
     """加载配置。文件缺失时回退默认值——「clone 下来即可运行」的要求。
 
-    路径优先级：`--config` > `VIDNOTE_CONFIG` >（打包运行时）数据目录下的 `config.yaml`。
+    路径优先级：`--config` > `VIDIGEST_CONFIG` >（打包运行时）数据目录下的 `config.yaml`。
     源码运行且两者都没给时 `paths.resolve_config_path()` 返回 `None`，
     与改造前完全一致。
     """

@@ -1,8 +1,12 @@
-# Vidnote
+# Vidigest
 
-> Video → Note。批量把在线视频（抖音 / B站 / YouTube）转成本地结构化文稿。
+> Video → Digest。批量把在线视频（抖音 / B站 / YouTube）转成本地结构化文稿。
 >
 > 下载 → 抽音频 → **GPU 转写** → 抽帧拼版 → （可选）汇总
+
+> **改名说明（2026-10-14）**：应用名由 `Vidnote` 改为 **`Vidigest`** ——
+> `VidNote` / `ViNote` / `VideoNote` 三个名字在同类开源项目里都已被占，无法区分。
+> **本地仓库目录 `Vidnote/` 与 GitHub 仓库名均未改**（只改应用名），落点与迁移见 `docs/改名执行单.md`。
 
 ## 状态
 
@@ -213,12 +217,14 @@ python -m app.cli list
 ./dev.sh --help      # 其余子命令：dev / bundle-dev / worker / check / clean
 ```
 
-产物：`app-ui/src-tauri/target/release/bundle/msi/Vidnote_0.1.0_x64_en-US.msi`（**1.45 GiB**）。
-装完的形态：安装目录 `%ProgramFiles%\Vidnote\`，桌面 / 开始菜单快捷方式名叫 `Vidnote`，
-卸载项 `Uninstall Vidnote`，数据目录 `%LOCALAPPDATA%\Vidnote`；
-**主程序文件名是小写的 `vidnote.exe`**（Tauri 用 cargo 包名，`productName` 不改它 —— 查进程时注意）。
-（**2026-10-06 应用改名**：`productName` 由脚手架的 `app-ui` 改为 `Vidnote`；
-`app-ui/` 只是工程目录名，保持不变。）
+产物：`app-ui/src-tauri/target/release/bundle/msi/Vidigest_0.1.0_x64_en-US.msi`（**1.45 GiB**）。
+装完的形态：安装目录 `%ProgramFiles%\Vidigest\`，桌面 / 开始菜单快捷方式名叫 `Vidigest`，
+卸载项 `Uninstall Vidigest`，数据目录 `%LOCALAPPDATA%\Vidigest`；
+**主程序文件名是小写的 `vidigest.exe`**（Tauri 用 cargo 包名，`productName` 不改它 —— 查进程时注意）。
+（~~**2026-10-06 应用改名**：`productName` 由脚手架的 `app-ui` 改为 `Vidnote`；~~ →
+**2026-10-14 再次改名：`Vidnote` → `Vidigest`**，同时把数据目录从 `%LOCALAPPDATA%\Vidnote`
+迁到 `%LOCALAPPDATA%\Vidigest`、`identifier` 改为 `com.benntqoo.vidigest`
+⇒ **装了旧版必须先卸载**。`app-ui/` 只是工程目录名，两次改名都没动它。）
 装完的程序**不需要用户机器上有 Python 或 Rust** —— Python 侧已打成
 PyInstaller 单目录产物，作为 Tauri 的 resources 落进 `<安装目录>\worker\`。
 
@@ -229,7 +235,7 @@ Windows 上从 cmd / PowerShell 调要写成 `bash dev.sh release`。
 - **只有 MSI，没有 `-setup.exe`**：2.5 GiB 载荷超 NSIS 的 2 GiB 硬限制，
   且 Tauri 模板把 `/SOLID` 写死，改压缩算法无效。NSIS 那条路已判死。
 - **第一次构建要联网**：WiX 工具链是自动下载的（`%LOCALAPPDATA%\tauri`），之后可离线。
-- **模型（2.9 GiB）不进包**：首次启动会生成 `%LOCALAPPDATA%\Vidnote\config.yaml`，
+- **模型（2.9 GiB）不进包**：首次启动会生成 `%LOCALAPPDATA%\Vidigest\config.yaml`，
   把 `large-v3` 放进去或改 `model_dir` 指向已有模型。
 
 未验证：**干净机器**上的安装与运行（同机模拟不算，本机有 Python 也有 Rust）。

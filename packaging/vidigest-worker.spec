@@ -1,17 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""Vidnote Python worker —— PyInstaller 打包配置（**单目录 / onedir**）。
+"""Vidigest Python worker —— PyInstaller 打包配置（**单目录 / onedir**）。
 
-**不要直接跑 `pyinstaller packaging/vidnote-worker.spec`**，用：
+**不要直接跑 `pyinstaller packaging/vidigest-worker.spec`**，用：
 
     <受管 venv>/Scripts/python.exe tools/build_worker.py
 
 构建脚本会先做前置校验（解释器、依赖版本、CUDA DLL 是否齐）再调用本 spec ——
 PyInstaller 自己是「打包成功 ≠ 产物可用」，前置校验才是有用的那部分。
 
-产物：`<repo>/build/pyinstaller/vidnote-worker/vidnote-worker.exe`
+产物：`<repo>/build/pyinstaller/vidigest-worker/vidigest-worker.exe`
 
 链路：
-    本 spec → `<repo>/build/pyinstaller/vidnote-worker/`
+    本 spec → `<repo>/build/pyinstaller/vidigest-worker/`
     → `tauri.conf.json` 的 `bundle.resources`（映射到安装目录的 `worker/`）
     → `app-ui/src-tauri/src/worker/locator.rs::locate_bundled()` 定位
 
@@ -121,7 +121,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="vidnote-worker",
+    name="vidigest-worker",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -143,7 +143,7 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="vidnote-worker",
+    name="vidigest-worker",
 )
 
 # 让 spec 自带一条「我完成了」的可观测输出：构建日志的末尾能直接看到产物大小。
@@ -151,4 +151,4 @@ coll = COLLECT(
 _total = sum(f.stat().st_size for f in Path(coll.name).rglob("*") if f.is_file()) if Path(
     coll.name
 ).is_dir() else 0
-print(f"[spec] vidnote-worker 收集完成，共 {_total / 1024 / 1024:.0f} MiB（Python {sys.version.split()[0]}）")
+print(f"[spec] vidigest-worker 收集完成，共 {_total / 1024 / 1024:.0f} MiB（Python {sys.version.split()[0]}）")

@@ -1,6 +1,8 @@
-# Vidnote — 交接文档
+# Vidigest — 交接文档
 
-> **最后更新**：2026-10-14（文档同步：§7 提交表补齐 10-10 的 8 个提交 + 未推计数 9 → 17）
+> **最后更新**：2026-10-14（**改名已执行并重出包** —— `Vidnote` → `Vidigest`：代码/配置 18 处 + 数据目录迁移 + worker 重建（28/28 冒烟）+ MSI 重出（`./dev.sh release` **exit 0**，耗时 9m3s）+ 落位读生成物核对；本地仓库目录与 GitHub 仓库名**未改**。**代码改动尚未提交。**）
+> ~~2026-10-14（**产品口径决议** —— 新名 = `Vidigest`（**未执行**）、PRD §1.2「不做」拆为「永久不做 / 暂不做（可逆）」、P6/P7 立项为 `docs/adr/0001`）~~
+> ~~2026-10-14（文档同步：§7 提交表补齐 10-10 的 8 个提交 + 未推计数 9 → 17）~~
 > ~~2026-10-10（进度复核：补记 10-08 那次构建 + 修正产物路径与计数）~~
 > ~~2026-10-06（应用改名 `app-ui` → `Vidnote` 之后）~~
 > **本文定位**：**当前状态 + 下一步该做什么**。产品目标与需求见 `docs/PRD.md`，
@@ -62,21 +64,29 @@ Windows Terminal / PowerShell）。详见 `docs/工程约定.md` 的 231 条目�
 | 下载层自测（cookie 失败翻译） | **7/7**，纯逻辑不联网 | `python tools/fetcher_selftest.py` |
 | Rust 单测 | **20/20** | `cargo test --lib`（`app-ui/src-tauri`） |
 | 打包链路 | 28 项冒烟，**含真实推理验证 GPU** | `python tools/build_worker.py` |
-| 安装包 | `Vidnote_0.1.0_x64_en-US.msi` **1.45 GiB**，exit 0 | `./dev.sh release`；⚠️ 磁盘上该文件时间戳为 **10-08 21:58**（比本节记录的那次更晚，见 §7 新增的「无提交」行） |
-| 无孤儿进程 | 进程树 `vidnote.exe → python.exe(venv 壳) → python.exe`，热重载后旧实例消失 | Job Object 三道回收 |
+| 安装包 | `Vidigest_0.1.0_x64_en-US.msi` **1.45 GiB**，exit 0 | `./dev.sh release`（2026-10-14 改名后重出） |
+| 无孤儿进程 | 进程树 `vidigest.exe → python.exe(venv 壳) → python.exe`，热重载后旧实例消失 | Job Object 三道回收 |
 | 界面渲染 | 每处显示都能指回事件来源、随异步事件更新、鼠标键盘生效 | 真实窗口截图，`docs/阶段3_界面确认.md` |
 | 故障态呈现 | 真杀 worker 进程树（不模拟）→ 按钮全禁用 + 退出原因进日志区 | 同上 |
 
 **2026-10-10 复核复跑**（工作区干净、代码无改动的前提下确认数字未漂）：协议层 **19/19**、
 调度层 **66/66**、fetcher **7/7** —— 与上表一致。
 
-**改名后的落位（2026-10-06 读 `wix/x64/main.wxs` 核过，不是推断）**：
+**改名后的落位（2026-10-14 改名后重出 MSI，**读 `target/release/wix/x64/main.wxs` 生成物 + 构建日志**核对）**：
 
-| 项 | 值 |
-|---|---|
-| 安装包 / 安装目录 / 快捷方式 / 卸载项 | 全是 **`Vidnote`**（`%ProgramFiles%\Vidnote`） |
-| **主程序文件名** | **`vidnote.exe`**（小写）—— Tauri 用 **cargo 包名**，`productName` 不改它 |
-| 数据目录 | `%LOCALAPPDATA%\Vidnote` |
+| 项 | 值 | 依据 |
+|---|---|---|
+| 安装包 | `Vidigest_0.1.0_x64_en-US.msi` | 构建日志 |
+| 安装目录 / 快捷方式 / 开始菜单 / 注册表 | 全是 **`Vidigest`**（`%ProgramFiles%\Vidigest`、`HKCU\Software\benntqoo\Vidigest`） | `main.wxs:96,102,105,111` |
+| **主程序文件名** | **`vidigest.exe`**（小写，4.5 MiB）—— Tauri 用 **cargo 包名**，`productName` 不改它 | 构建日志 + `main.wxs:117` |
+| 数据目录 | `%LOCALAPPDATA%\Vidigest`（~~`%LOCALAPPDATA%\Vidnote`~~ 于 2026-10-14 迁移） | 实测 |
+| 🔴 **UpgradeCode** | `fabe7526-…`（**随 `productName` 变**，公式 `uuid5(DNS,"<productName>.exe.app.<arch>")`） | `main.wxs:18` |
+
+> 🔴 **由此得出一条验收前提**：UpgradeCode 变了 ⇒ 新旧 MSI 是**两个独立产品**，装新版不会覆盖旧版。
+> ~~**装 `Vidigest` 之前必须先手动卸载 `Vidnote`**（否则二者并存、桌面出现两个快捷方式）。~~
+> ⇒ **2026-10-14 更正：本机从未安装过 `Vidnote`**（`%ProgramFiles%\Vidnote` 不存在、无快捷方式、
+> `%LOCALAPPDATA%\com.benntqoo.vidnote` 只有直跑 exe 产生的 `EBWebView` 缓存）⇒ **无「先卸载」这一步**。
+> 实际含义：以后只会存在 `Vidigest` 一个产品，不存在并存问题。
 
 ---
 
@@ -92,17 +102,17 @@ Windows Terminal / PowerShell）。详见 `docs/工程约定.md` 的 231 条目�
 > **进度（2026-10-10）**：**第 1 项「注入对照」✅ 已通过** —— 沙箱外 `cmd.exe` 跑
 > `tools/probe_spawn_env.py`：**29 模块 / 未检出注入 / 管道两方向均 `OK`**，与沙箱内的
 > `66 模块 / 有 tsbx.dll / 读方向 231` 形成唯一变量对照（`docs/阶段3_界面确认.md` §7.8）。
-> 结论：**231 只在工具进程树内发生，Vidnote 无问题** —— 这条由实验闭合，不再只是推理。
+> 结论：**231 只在工具进程树内发生，Vidigest 无问题** —— 这条由实验闭合，不再只是推理。
 > ⚠️ 但它**不等于 GUI 能起来**：第 4 步 `npm run tauri dev` 才是真验证，**其余 11 项仍未做**。
 > **进度更新**：第 4 步已**部分通过** —— 窗口起了、进程树核实为
-> `vidnote.exe → python.exe(venv 壳) → python.exe(基础解释器)`；**解释器定位坑已修**（加了两道
+> `vidigest.exe → python.exe(venv 壳) → python.exe(基础解释器)`；**解释器定位坑已修**（加了两道
 > 本机保险，见 §2 与 §7.8），但**状态栏 `已启动：…` 文本仍未抄**、其余 11 项未做。
 
 1. **§7.8 十二步运行清单**（`docs/阶段3_界面确认.md` §7.8）—— 覆盖：自动重启、手动重启按钮、
    关闭确认弹窗、优雅关闭 30 s 无孤儿、行右键菜单、故障态那 2 处修复的渲染、
    **失败/中止后能接续新任务**（2026-10-06 卡死缺陷回归，第 11/12 步）。
    → **本轮 4 处界面改动全部只有代码级推理、零截图证据**，全卡在这一个前置上。
-2. **L1**：`cd app-ui` → `set VIDNOTE_BUNDLED=1` → `npm run tauri dev`
+2. **L1**：`cd app-ui` → `set VIDIGEST_BUNDLED=1` → `npm run tauri dev`
    → 判据：日志出现「已启动：打包产物：仓库内的 PyInstaller 产物」（**只有这一行能证明走的是
    sidecar 而不是 venv**，两者界面看起来一样）。
 3. **L2**：装 MSI，验安装目录 / `worker/` 落位 / 快捷方式 / 卸载项。
@@ -133,20 +143,28 @@ Windows Terminal / PowerShell）。详见 `docs/工程约定.md` 的 231 条目�
 
 ## 4. 接下来要做的事（按顺序）
 
+> ✅ **改名已于 2026-10-14 执行完毕**（`Vidnote` → `Vidigest`）：代码/配置 18 处 + `%LOCALAPPDATA%`
+> 数据目录迁移 + worker 重建 + MSI 重出，落点与判据见 `docs/改名执行单.md`（该单已标「已执行」）。
+> **本地仓库目录 `D:/Code/SideProject/Vidnote` 与 GitHub 仓库名 `benntqoo/Vidnote` 刻意未改**
+> —— 只改应用名，避免动仓库路径。改名成本重心不在数据迁移（本机只有 2 条任务），而在
+> `.gitignore` 内的两个「保险」文件（`.cargo/config.toml` 的 `VIDIGEST_PYTHON`）——
+> 漏改**不报错、只静默失效**，`./dev.sh check` 也覆盖不到。
+
 ### 第 1 步：沙箱外验证（人工，约 15 分钟）—— 先做这个
 
 按 `docs/阶段3_界面确认.md` §7.8 → §7.9 依次跑：**结果填 §7.8 的「结果记录」表，截图回填 §六。**
 这一步不做，后面每一项界面改动都还在「无证据」状态里叠加。
 
 > 2026-10-10 已把 12 步清单 + 进程树基线命令 + 收尾模板写进 §7.8，照抄即可。
-> ✅ **解释器已配好且已实测定案（2026-10-10）**：原先开发期无人设 `VIDNOTE_PYTHON`，会落到 PATH
+> ✅ **解释器已配好且已实测定案（2026-10-10；2026-10-14 改名为 `VIDIGEST_PYTHON`）**：原先开发期无人设
+> `VIDIGEST_PYTHON`，会落到 PATH
 > 兜底、命中 `C:\Python313\python.exe`（无 faster-whisper）⇒ worker 必挂。现已加**两道本机保险**
-> （都在 `.gitignore` 内）：① `app-ui/src-tauri/.cargo/config.toml` 的 `[env] VIDNOTE_PYTHON`；
+> （都在 `.gitignore` 内）：① `app-ui/src-tauri/.cargo/config.toml` 的 `[env] VIDIGEST_PYTHON`；
 > ② 仓库根 `.venv` junction → 托管 venv。**直接 `npm run tauri dev` 即可**，不必再设变量。
-> **实测结果：保险 1 生效** —— 读 `vidnote.exe` 的进程环境变量，确有 `VIDNOTE_PYTHON`、而 PATH 无
+> **实测结果：保险 1 生效** —— 读 `vidigest.exe` 的进程环境变量，确有 `VIDIGEST_PYTHON`、而 PATH 无
 > venv，并有 `CARGO_*` 三个变量 ⇒ 确认宿主由 `cargo run` 启动（与 tauri-cli v2 源码一致）。
 > 背景与删除注意事项见 `docs/阶段3_界面确认.md` §7.8「第 4 步的解释器陷阱」。
-> **本机前置已在沙箱内验完**（不必重做）：`node_modules`/`vite`、`build/pyinstaller/vidnote-worker/`、
+> **本机前置已在沙箱内验完**（不必重做）：`node_modules`/`vite`、`build/pyinstaller/vidigest-worker/`、
 > `models/large-v3/`、`cargo test --lib` **20/20**。唯一预料之外的耗时是 `target/debug/` 为空
 > ⇒ 第 4 步 `npm run tauri dev` 需先编译 debug 版 Rust（数分钟）。
 
@@ -206,6 +224,9 @@ Windows Terminal / PowerShell）。详见 `docs/工程约定.md` 的 231 条目�
 | Rust↔Python 打通的三个阻塞 | `docs/阶段3_打通记录.md` |
 | 性能与环境原始数据 | `docs/实测记录.md` |
 | 基线参数快照 | `samples/README.md`（**比对失败先查快照，再怀疑代码**） |
+| **改名落点与数据迁移** | `docs/改名执行单.md`（新名 = `Vidigest`；**已于 2026-10-14 执行完毕**，结果与 3 处执行单自身偏差见该文 §7） |
+| **功能分期与融合判定** | `docs/功能融合路线图.md`（P1 汇总 → P2 字幕优先 → P3 VLM POC → P4 cookie） |
+| **架构/产品形态决策** | `docs/adr/`（ADR-0001 插件与云端 = 本期不做；ADR-0002/0003 待写） |
 
 **代码地图**
 
@@ -222,7 +243,7 @@ app-ui/               # Rust + Tauri 宿主（目录名未随应用改名而改�
 ├── src-tauri/src/commands.rs     # 暴露给前端的命令
 └── src/                          # React 19 + TS；components/ + worker/client.ts
 tools/                # 验收脚本（见下表）
-packaging/            # vidnote-worker.spec + tauri.bundle.json（overlay，刻意不进主配置）
+packaging/            # vidigest-worker.spec + tauri.bundle.json（overlay，刻意不进主配置）
 ```
 
 ---
@@ -232,11 +253,11 @@ packaging/            # vidnote-worker.spec + tauri.bundle.json（overlay，刻�
 | 项 | 值 / 注意 |
 |---|---|
 | Python 解释器 | **必须显式**：`C:/Users/Ben/.workbuddy/binaries/python/envs/default/Scripts/python.exe` —— 托管/系统 3.13 **都没** faster-whisper。`dev.sh` 用「能不能 `import faster_whisper`」挑解释器 |
-| Rust 找 Python | `VIDNOTE_PYTHON` → `<repo>/.venv/Scripts/python.exe` → PATH。⚠️ **仓库里没有任何脚本设置它**（2026-10-10 复核）⇒ 原先落到 PATH 兜底、命中 `C:\Python313\`（**无 faster-whisper**）而必挂。**已加两道本机保险**：① `app-ui/src-tauri/.cargo/config.toml` 的 `[env] VIDNOTE_PYTHON`；② 仓库根 `.venv` junction → 托管 venv（都在 `.gitignore` 内，换机器需重建）。**2026-10-10 实测：保险 ① 生效**（`VIDNOTE_PYTHON` 出现在 `vidnote.exe` 进程环境里、PATH 无 venv）+ 「`tauri dev` 走 `cargo run`」已由父进程与源码双证。**打包产物不受影响**（sidecar 自带运行时）。详见 `docs/阶段3_界面确认.md` §7.8 |
+| Rust 找 Python | `VIDIGEST_PYTHON` → `<repo>/.venv/Scripts/python.exe` → PATH。⚠️ **仓库里没有任何脚本设置它**（2026-10-10 复核）⇒ 原先落到 PATH 兜底、命中 `C:\Python313\`（**无 faster-whisper**）而必挂。**已加两道本机保险**：① `app-ui/src-tauri/.cargo/config.toml` 的 `[env] VIDIGEST_PYTHON`；② 仓库根 `.venv` junction → 托管 venv（都在 `.gitignore` 内，换机器需重建）。**2026-10-10 实测：保险 ① 生效**（`VIDIGEST_PYTHON` 出现在 `vidigest.exe` 进程环境里、PATH 无 venv）+ 「`tauri dev` 走 `cargo run`」已由父进程与源码双证。⚠️ **2026-10-14 改名时这两处必须同步手改，否则静默失效**。**打包产物不受影响**（sidecar 自带运行时）。详见 `docs/阶段3_界面确认.md` §7.8 |
 | MSVC | ⚠️ 本机 VS 2022 的 MSVC **14.44 缺 `include`**；已用项目级 `.cargo/config.toml`（**已 gitignore、本机专用**）钉死 VS 2019 BuildTools。**删掉它本机编不过任何含 C/C++ 的 crate** |
 | 模型 | `models/large-v3/`（2.87 GB，**不入库**，只下一次） |
 | ffmpeg | WinGet 装的 `Links/ffmpeg.exe` 是 **0 字节占位**，定位时必须校验「非空 + PE 头」 |
-| API Key | 走环境变量 `VIDNOTE_API_KEY`，**不进配置文件** |
+| API Key | 走环境变量 `VIDIGEST_API_KEY`，**不进配置文件**（2026-10-14 改名；迁移时须同步改 `config.yaml` 里的 `summarize.api_key_env`，否则静默读不到） |
 
 ---
 

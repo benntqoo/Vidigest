@@ -1,4 +1,4 @@
-# Vidnote IPC 协议规格（Rust 宿主 ↔ Python Worker）
+# Vidigest IPC 协议规格（Rust 宿主 ↔ Python Worker）
 
 > **版本**：v1.1
 > **状态**：已定稿（v1 2026-10-02 / v1.1 2026-10-03），`app/rpc.py` 已按本规格实现**全部**命令与事件

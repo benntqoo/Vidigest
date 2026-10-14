@@ -364,13 +364,13 @@ def _isolated_env() -> tuple[dict[str, str], str]:
     测试会真实入队任务，若直接写项目根的 `state.db` 会留下脏数据，
     且第二次运行会全部被判为 duplicate。
     """
-    tmp = tempfile.mkdtemp(prefix="vidnote-smoke-")
+    tmp = tempfile.mkdtemp(prefix="vidigest-smoke-")
     cfg = Path(tmp) / "config.yaml"
     cfg.write_text(
         f"paths:\n  work_dir: {tmp}/work\n  model_dir: {ROOT}/models\n",
         encoding="utf-8",
     )
-    return {"VIDNOTE_CONFIG": str(cfg)}, tmp
+    return {"VIDIGEST_CONFIG": str(cfg)}, tmp
 
 
 def main() -> int:

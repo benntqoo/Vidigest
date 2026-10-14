@@ -1,4 +1,4 @@
-# Vidnote — Python 依赖
+# Vidigest — Python 依赖
 # 实测通过的版本以 # verified 标注；= 后为该版本在本机的实测值。
 # 安装（本机托管环境）：
 #   C:/Users/Ben/.workbuddy/binaries/python/envs/default/Scripts/pip.exe install -r requirements.txt

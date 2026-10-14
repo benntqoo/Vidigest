@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Vidnote 构建入口
+# Vidigest 构建入口
 #
 #   ./dev.sh release      完整分发形态：Python worker + Tauri 安装包
 #   ./dev.sh bundle-dev   L1 验证：不重新打包，直接用 worker 产物驱动 GUI
@@ -15,7 +15,7 @@
 #   --yes, -y       clean 时真的删除
 #
 # 环境变量：
-#   VIDNOTE_PYTHON  指定打包用的 Python（必须已装 faster-whisper / ctranslate2）
+#   VIDIGEST_PYTHON  指定打包用的 Python（必须已装 faster-whisper / ctranslate2）
 #
 # 为什么要固化成一个脚本：完整构建是三个**必须按顺序、各有独立判据**的环节
 # （PyInstaller → cargo compile → Tauri bundle），且环节之间有隐式耦合
@@ -34,14 +34,14 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$SCRIPT_DIR"
 
 #: 与 tools/build_worker.py 的 DIST/OUT_DIR/EXE 保持一致（那边是真源）
-WORKER_EXE="$REPO/build/pyinstaller/vidnote-worker/vidnote-worker.exe"
+WORKER_EXE="$REPO/build/pyinstaller/vidigest-worker/vidigest-worker.exe"
 TAURI_BUNDLE_CFG="../packaging/tauri.bundle.json"
 BUNDLE_DIR="$REPO/app-ui/src-tauri/target/release/bundle"
 
 DRY_RUN=0
 SKIP_WORKER=0
 CLEAN_YES=0
-PY="${VIDNOTE_PYTHON:-}"
+PY="${VIDIGEST_PYTHON:-}"
 STEP_MSG=""
 
 # ----------------------------------------------------------------- 输出小工具
@@ -94,7 +94,7 @@ usage() {
 # 然后在 PyInstaller 中途才失败，报错样子离真因很远（2026-10-03 踩过）。
 find_python() {
   local cand=() c
-  [ -n "${VIDNOTE_PYTHON:-}" ] && cand+=("$VIDNOTE_PYTHON")
+  [ -n "${VIDIGEST_PYTHON:-}" ] && cand+=("$VIDIGEST_PYTHON")
   cand+=(
     "C:/Users/Ben/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
     "$REPO/.venv/Scripts/python.exe"
@@ -116,8 +116,8 @@ find_python() {
 need_python() {
   if [ -z "$PY" ]; then
     PY="$(find_python)" || {
-      warn "试过的候选：VIDNOTE_PYTHON / 托管 venv / .venv / PATH"
-      die "找不到装有 faster-whisper 的 Python。用 VIDNOTE_PYTHON=<路径> 指定。"
+      warn "试过的候选：VIDIGEST_PYTHON / 托管 venv / .venv / PATH"
+      die "找不到装有 faster-whisper 的 Python。用 VIDIGEST_PYTHON=<路径> 指定。"
     }
     ok "Python：$PY"
   fi
@@ -177,7 +177,7 @@ cmd_bundle_dev() {
   say "      —— 只有这一行能证明走的是 sidecar 而不是 venv（两者界面看起来一样）"
   (
     cd "$REPO/app-ui" || exit 1
-    VIDNOTE_BUNDLED=1 run npm run tauri dev
+    VIDIGEST_BUNDLED=1 run npm run tauri dev
   )
 }
 

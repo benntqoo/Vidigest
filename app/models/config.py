@@ -131,7 +131,7 @@ class SummarizeConfig:
 
     enabled: bool = False
     base_url: str = "https://api.openai.com/v1"
-    api_key_env: str = "VIDNOTE_API_KEY"
+    api_key_env: str = "VIDIGEST_API_KEY"
     model: str = "gpt-4o"
     template: str = "摘要+章节大纲+要点"
 

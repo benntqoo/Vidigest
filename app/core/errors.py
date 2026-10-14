@@ -12,11 +12,11 @@ from __future__ import annotations
 import threading
 
 
-class VidnoteError(Exception):
+class VidigestError(Exception):
     """本项目所有异常的基类。"""
 
 
-class StageError(VidnoteError):
+class StageError(VidigestError):
     """单个阶段失败，只影响当前任务。
 
     带上 `stage` 便于直接写入 `Task.stage_error`。
@@ -27,7 +27,7 @@ class StageError(VidnoteError):
         super().__init__(f"[{stage}] {message}")
 
 
-class FatalEnvironmentError(VidnoteError):
+class FatalEnvironmentError(VidigestError):
     """环境级故障（CUDA DLL 缺失、模型损坏等），必须中止整批。
 
     继续跑只会浪费时间和平台配额，见 PLAN.md §4.1。
@@ -38,7 +38,7 @@ class FatalEnvironmentError(VidnoteError):
         super().__init__(f"[{stage}] 环境故障，中止整批：{message}")
 
 
-class TaskCancelled(VidnoteError):
+class TaskCancelled(VidigestError):
     """当前任务被用户取消。
 
     ⚠️ **不是** `StageError` 的子类。两者在语义上不同：`StageError` 表示「试过了、
