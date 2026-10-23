@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 #: `env_verified` 要真实加载模型（约 5-8 秒），给足超时
 ENV_VERIFY_TIMEOUT = 90
@@ -297,6 +298,74 @@ def run_main_flow(env: dict[str, str]) -> Host:
         f"code={err_retry.get('data', {}).get('code') if err_retry else None}",
     )
 
+    # ---- 设置：get_config（2026-10-24 新增）----
+    host.send("get_config", req_id="c-cfg-1")
+    cfg_evt = host.await_event("config")
+    cd = cfg_evt.get("data", {}) if cfg_evt else {}
+    needed = {
+        "path",
+        "is_default",
+        "config",
+        "model_path",
+        "model_present",
+        "model_missing_files",
+        "model_size_bytes",
+        "read_only_fields",
+        "api_key_env",
+        "api_key_present",
+        "download",
+    }
+    host.record(
+        "get_config 返回全量配置 + 模型元信息",
+        cfg_evt is not None and needed.issubset(cd.keys()) and isinstance(cd.get("config"), dict),
+        f"缺字段={sorted(needed - set(cd.keys()))} model_present={cd.get('model_present')}",
+    )
+
+    # ---- 设置：set_config 的安全边界 ----
+    host.send(
+        "set_config",
+        {
+            "patch": {
+                "summarize": {"api_key": "sk-must-not-land", "enabled": True},
+                "transcribe": {"beam_size": 7},
+                "bogus_section": {"x": 1},
+            }
+        },
+        req_id="c-cfg-2",
+    )
+    saved = host.await_event("config_saved")
+    sd = saved.get("data", {}) if saved else {}
+    warn = sd.get("warnings") or []
+    on_disk = Path(env["VIDIGEST_CONFIG"]).read_text(encoding="utf-8")
+    no_key_in_payload = "api_key" not in (sd.get("config", {}).get("summarize") or {})
+    host.record(
+        "set_config 拒写 summarize.api_key（响应与磁盘都没有）",
+        "E_API_KEY_NOT_ALLOWED" in warn and "sk-must-not-land" not in on_disk and no_key_in_payload,
+        f"warnings={warn} 磁盘含明文={'sk-must-not-land' in on_disk}",
+    )
+    host.record(
+        "set_config 未知段丢弃并警告",
+        any(str(w).startswith("E_UNKNOWN_SECTION") for w in warn),
+        f"warnings={warn}",
+    )
+    host.record(
+        "set_config 基线参数改动 → E_BASELINE_PARAM_CHANGED 且已落盘",
+        any(str(w).startswith("E_BASELINE_PARAM_CHANGED") for w in warn)
+        and "beam_size: 7" in on_disk,
+        f"warnings={warn} 落盘={'beam_size: 7' in on_disk}",
+    )
+
+    # ---- 设置：非法值被 validate 挡住，不写盘 ----
+    before_text = Path(env["VIDIGEST_CONFIG"]).read_text(encoding="utf-8")
+    host.send("set_config", {"patch": {"runtime": {"device": "tpu"}}}, req_id="c-cfg-3")
+    err_cfg = host.await_event("error")
+    after_text = Path(env["VIDIGEST_CONFIG"]).read_text(encoding="utf-8")
+    host.record(
+        "set_config 非法 device → E_BAD_ARGS 且不写盘",
+        bool(err_cfg) and err_cfg.get("data", {}).get("code") == "E_BAD_ARGS" and before_text == after_text,
+        f"code={err_cfg.get('data', {}).get('code') if err_cfg else None} 未写盘={before_text == after_text}",
+    )
+
     # ---- 等 GPU 真实验证（异步，要加载模型）----
     print("   … 等待 env_verified（真实推理验证，需加载模型 5-8 秒）")
     verified = host.await_event("env_verified", timeout=ENV_VERIFY_TIMEOUT)
@@ -306,8 +375,26 @@ def run_main_flow(env: dict[str, str]) -> Host:
         vd = verified.get("data", {})
         host.record(
             "env_verified 异步推送",
-            "gpu_usable" in vd and "concurrency" in vd,
-            f"gpu_usable={vd.get('gpu_usable')} detail={str(vd.get('detail'))[:60]}",
+            "gpu_usable" in vd and "concurrency" in vd and "blocked_reason" in vd,
+            f"gpu_usable={vd.get('gpu_usable')} blocked_reason={vd.get('blocked_reason')} "
+            f"detail={str(vd.get('detail'))[:50]}",
+        )
+        # 三态语义（规格 §4.2）：verifier 只认「非 null 才算验过」
+        host.record(
+            "env_verified 的 gpu_verified 与三态一致",
+            vd.get("gpu_verified") == (vd.get("gpu_usable") is not None),
+            f"gpu_usable={vd.get('gpu_usable')} gpu_verified={vd.get('gpu_verified')}",
+        )
+
+        # ---- 手动复核（设置页的「重新校验」）----
+        host.send("verify_env", req_id="c-verify")
+        started_evt = host.await_event("env_verify_started")
+        again = host.await_event("env_verified", timeout=ENV_VERIFY_TIMEOUT)
+        host.record(
+            "verify_env → env_verify_started + env_verified",
+            started_evt is not None and again is not None,
+            f"started={'收到' if started_evt else '未收到'} "
+            f"verified={'收到' if again else '未收到'}",
         )
 
     # ---- 判据 8：优雅关闭 ----
@@ -373,6 +460,38 @@ def _isolated_env() -> tuple[dict[str, str], str]:
     return {"VIDIGEST_CONFIG": str(cfg)}, tmp
 
 
+def check_verify_cuda_tristate(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
+    """`verify_cuda` 的「没验成」必须是 `None`，不能是 `False`。
+
+    这条直接对应 2026-10-24 的误报：模型没装返回 `False`，上层一路读成
+    「GPU 不可用」，状态栏写「吞吐下降约 6 倍」，把用户引向驱动排查 —— 方向全错。
+    这两条不需要加载模型，所以是**秒级**判据。
+    """
+    from app.core import env_probe
+
+    missing = Path(tmp) / "no-such-model"
+    ok, detail, reason = env_probe.verify_cuda(missing)
+    judgements.append(
+        (
+            "verify_cuda：模型缺失 → (None, model_missing)",
+            ok is None and reason == "model_missing",
+            f"ok={ok!r} reason={reason} detail={detail[:46]}",
+        )
+    )
+
+    partial = Path(tmp) / "partial-model"
+    partial.mkdir(parents=True, exist_ok=True)
+    (partial / "config.json").write_text("{}", encoding="utf-8")
+    ok2, detail2, reason2 = env_probe.verify_cuda(partial)
+    judgements.append(
+        (
+            "verify_cuda：模型不完整 → (None, model_incomplete)",
+            ok2 is None and reason2 == "model_incomplete",
+            f"ok={ok2!r} reason={reason2} detail={detail2[:46]}",
+        )
+    )
+
+
 def main() -> int:
     print("IPC 协议冒烟测试 —— docs/IPC协议规格.md §9\n")
 
@@ -381,6 +500,7 @@ def main() -> int:
     host = run_main_flow(env)
     check_protocol_purity(host)
     check_seq_monotonic(host)
+    check_verify_cuda_tristate(tmp, host.judgements)
 
     run_eof_flow(env, host.judgements)
 

@@ -27,15 +27,18 @@ import queue
 import sys
 import threading
 import time
+from dataclasses import fields as dataclass_fields
+from pathlib import Path
 from typing import Any, Callable, TextIO
 
 from app.core import concurrency as concurrency_mod
 from app.core import env_probe
+from app.core import model_downloader
 from app.core import paths
 from app.core.dispatcher import Dispatcher
 from app.core.store import Store
 from app.core.urls import extract_many
-from app.models.config import Config
+from app.models.config import DEFAULT_CONFIG_NAME, Config, ConfigError
 from app.models.task import Task, TaskStatus
 
 PROTOCOL_VERSION = 1
@@ -67,6 +70,29 @@ STAGE_LABELS: dict[str, str] = {
     TaskStatus.FAILED.value: "失败",
     TaskStatus.CANCELLED.value: "已取消",
 }
+
+
+#: 设置界面允许改的配置段。**白名单，不是黑名单**：
+#: 未知段与未知键一律丢弃并回 `warnings`，不静默写进 yaml。
+EDITABLE_SECTIONS: tuple[str, ...] = (
+    "paths",
+    "runtime",
+    "transcribe",
+    "frames",
+    "summarize",
+    "download",
+)
+
+#: 保存时必须转成绝对路径的字段（相对路径会随 cwd 漂移；打包运行时 cwd 是安装目录）。
+ABSOLUTE_PATH_FIELDS: tuple[str, ...] = ("work_dir", "model_dir", "cookies_file")
+
+#: 一旦与当前值不同就必须警告的字段：它们直接决定分段边界
+#: （`app/models/config.py:104-107`），改了会让 `samples/transcript_gpu.txt`
+#: 的 662 段金标准基线失效。界面默认只读，但允许带警告修改。
+BASELINE_FIELDS: tuple[str, ...] = (
+    "transcribe.beam_size",
+    "transcribe.vad_min_silence_ms",
+)
 
 
 def _configure_streams() -> None:
@@ -160,10 +186,19 @@ class Worker:
     「协议帧 ↔ 调度器调用」的翻译，不自己管线程与队列。
     """
 
-    def __init__(self, cfg: Config, proto: Protocol, config_is_default: bool = False) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        proto: Protocol,
+        config_is_default: bool = False,
+        config_path: Path | None = None,
+    ) -> None:
         self.cfg = cfg
         self.proto = proto
         self.config_is_default = config_is_default
+        #: 写回用的配置文件路径。**必须是实际读到的那个文件** ——
+        #: `VIDIGEST_CONFIG` 指定 / 打包数据目录 / 源码运行的 `cwd/config.yaml`。
+        self.config_path = Path(config_path) if config_path else Path.cwd() / DEFAULT_CONFIG_NAME
         # state.db 放仓库根（PLAN.md §4 目录树），与 work/ 分开，避免误删工作目录丢状态
         self.store = Store(cfg.root / "state.db")
         self.env = env_probe.probe(cfg.work_path())
@@ -185,6 +220,11 @@ class Worker:
 
         self._inbox: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self._stop = threading.Event()
+        #: 模型下载器。**懒建**：只有点过「下载模型」才存在，避免每条命令都持有它。
+        self._downloader: model_downloader.ModelDownloader | None = None
+        #: 环境验证互斥。启动时有一次，用户点「重新校验」又可能来一次 ——
+        #: 两次同时加载 3 GB 模型到显存，没有意义且很可能本身就失败。
+        self._verify_lock = threading.Lock()
         self._handlers: dict[str, Callable[[dict[str, Any], str | None], None]] = {
             "hello": self._cmd_hello,
             "ping": self._cmd_ping,
@@ -198,6 +238,11 @@ class Worker:
             "cancel_task": self._cmd_cancel_task,
             "retry_task": self._cmd_retry_task,
             "shutdown": self._cmd_shutdown,
+            "get_config": self._cmd_get_config,
+            "set_config": self._cmd_set_config,
+            "download_model": self._cmd_download_model,
+            "cancel_model_download": self._cmd_cancel_model_download,
+            "verify_env": self._cmd_verify_env,
         }
 
     # ---- 启动 ----
@@ -301,14 +346,24 @@ class Worker:
         为什么不能只看 `device_count`：它只枚举硬件，即使 cuBLAS/cuDNN 缺失
         也返回 1（PLAN.md §9.1）。
         """
+        if not self._verify_lock.acquire(blocking=False):
+            logging.info("已有一次环境验证在进行，跳过本次")
+            return
+        try:
+            self._verify_env_inner()
+        finally:
+            self._verify_lock.release()
+
+    def _verify_env_inner(self) -> None:
         device = self.cfg.runtime.effective_device(True)
         compute_type = self.cfg.runtime.effective_compute_type(device)
 
         if device != "cuda":
+            # 配置指定了 cpu —— 这是用户的选择，不是「没能验证」，故 reason 留空。
             self._apply_env_verification(False, "配置指定 device=cpu，跳过 GPU 验证")
             return
 
-        box: list[tuple[bool, str]] = []
+        box: list[tuple[bool | None, str, str]] = []
 
         def _run() -> None:
             try:
@@ -318,7 +373,9 @@ class Worker:
                     )
                 )
             except BaseException as exc:  # noqa: BLE001 — 子线程里的异常绝不能静默
-                box.append((False, f"验证线程异常：{type(exc).__name__}: {exc}"))
+                box.append(
+                    (False, f"验证线程异常：{type(exc).__name__}: {exc}", "verify_exception")
+                )
 
         # 再套一层线程 + `join(timeout)`：本函数自己就住在 daemon 线程里，
         # 没法给自己设超时，而 `verify_cuda` 是同步阻塞的。
@@ -332,16 +389,20 @@ class Worker:
                 f"GPU 验证超过 {self.ENV_VERIFY_TIMEOUT:.0f} s 未返回，结论为**未知**（不是不可用）。"
                 "常见成因：CUDA 运行库加载被安全软件拦截，或 DLL 缺失导致原生加载挂起。"
                 "worker 日志里有 `CUDA 验证：…` 的分步打点，照它可定位卡在哪一步。",
+                "verify_timeout",
             )
             return
 
-        ok, detail = box[0]
-        self._apply_env_verification(ok, detail)
+        ok, detail, reason = box[0]
+        self._apply_env_verification(ok, detail, reason)
 
-    def _apply_env_verification(self, ok: bool | None, detail: str) -> None:
+    def _apply_env_verification(self, ok: bool | None, detail: str, reason: str = "") -> None:
         """写回验证结论并广播。
 
         `ok=None` 表示**未验证 / 未知** —— 三态布尔里它不是「否」（PLAN §4.2）。
+        `reason` 是「为什么没验成 / 为什么不行」的机器可读原因码，见
+        `app/core/env_probe.py` 的 `REASON_*`。它让界面能说「模型未安装」而不是
+        「GPU 不可用」——后者会把用户引向完全错误的排查方向。
         """
         self.env.cuda.usable = ok
         self.env.cuda.detail = detail
@@ -355,12 +416,16 @@ class Worker:
         self.dispatcher.conc = self.concurrency
 
         label = "可用" if ok is True else ("不可用" if ok is False else "未知（未验证）")
-        logging.info("环境验证：GPU %s —— %s", label, detail)
+        suffix = f" [{reason}]" if reason else ""
+        logging.info("环境验证：GPU %s —— %s%s", label, detail, suffix)
         self.proto.emit(
             "env_verified",
             {
                 "gpu_usable": ok,
+                "gpu_verified": ok is not None,
                 "detail": detail,
+                # 空串转 None：协议里「没有原因」就用 null，别用 "" 让前端两套判断
+                "blocked_reason": reason or None,
                 "concurrency": self.concurrency.to_dict(),
             },
         )
@@ -498,6 +563,229 @@ class Worker:
     def _cmd_get_concurrency(self, args: dict[str, Any], req_id: str | None) -> None:
         self.proto.emit("concurrency", self.concurrency.to_dict(), req_id)
 
+    # ---- 设置与模型（2026-10-24 新增，见 docs/设置界面与模型下载_执行单.md）----
+
+    def _cmd_get_config(self, args: dict[str, Any], req_id: str | None) -> None:
+        self.proto.emit("config", self._config_payload(), req_id)
+
+    def _cmd_set_config(self, args: dict[str, Any], req_id: str | None) -> None:
+        """部分更新配置：深合并到对应 section → validate → 写盘。
+
+        **不在这里应用**（D-S1）：`Config` 只在进程启动时读一次，`Dispatcher` 的并发
+        与模型缓存都按它算好了。Rust 侧收到 `config_saved` 会重启 worker，
+        新进程自然读到新配置 —— 比热应用少一整类 bug。
+
+        安全边界（写进实现，不是文档装饰）：
+        - 只接受 `EDITABLE_SECTIONS` 白名单段与 dataclass 里真实存在的键；
+          未知段 / 键丢弃并回 `warnings`，不静默写盘
+        - `summarize.api_key` **永不允许**写入（密钥只走环境变量）
+        - `paths.*` 的相对路径按 `cfg.root` 解析后**存绝对路径**
+        - 改 `beam_size` / `vad_min_silence_ms` 必回 `E_BASELINE_PARAM_CHANGED`
+        """
+        patch = args.get("patch")
+        if not isinstance(patch, dict):
+            self.proto.error("E_BAD_ARGS", "set_config 需要 args.patch 为对象", req_id=req_id)
+            return
+
+        warnings: list[str] = []
+        data = self.cfg.to_dict()
+
+        for section, values in patch.items():
+            if section not in EDITABLE_SECTIONS:
+                warnings.append(f"E_UNKNOWN_SECTION:{section}")
+                continue
+            if not isinstance(values, dict):
+                warnings.append(f"E_BAD_SECTION_TYPE:{section}")
+                continue
+            known = {f.name for f in dataclass_fields(type(getattr(self.cfg, section)))}
+            target = data.setdefault(section, {})
+            for key, value in values.items():
+                if section == "summarize" and key == "api_key":
+                    # 密钥永远不进配置文件（`config.py:130-137` 的设计）。
+                    warnings.append("E_API_KEY_NOT_ALLOWED")
+                    continue
+                if key not in known:
+                    warnings.append(f"E_UNKNOWN_KEY:{section}.{key}")
+                    continue
+                target[key] = value
+
+        # 相对路径 → 绝对路径。否则打包运行时 cwd 是安装目录，相对路径会漂到那里。
+        paths_patch = data.get("paths", {})
+        for key in ABSOLUTE_PATH_FIELDS:
+            raw = paths_patch.get(key)
+            if raw is None or (isinstance(raw, str) and not raw.strip()):
+                paths_patch[key] = None
+                continue
+            if not isinstance(raw, str):
+                warnings.append(f"E_BAD_PATH_TYPE:{key}")
+                paths_patch[key] = getattr(self.cfg.paths, key)
+                continue
+            p = Path(raw).expanduser()
+            paths_patch[key] = str(p if p.is_absolute() else self.cfg.root / p)
+
+        try:
+            new_cfg = Config.from_dict(data, root=self.cfg.root)
+            new_cfg.validate()
+        except ConfigError as exc:
+            self.proto.error("E_BAD_ARGS", str(exc), req_id=req_id)
+            return
+
+        # 基线参数（决定分段边界）——允许改，但必须带警告
+        for dotted in BASELINE_FIELDS:
+            section, key = dotted.split(".", 1)
+            if getattr(getattr(new_cfg, section), key) != getattr(getattr(self.cfg, section), key):
+                warnings.append(f"E_BASELINE_PARAM_CHANGED:{dotted}")
+
+        # 目录可写探测（R3）：只探用户真的改过的目录
+        for key in ("work_dir", "model_dir"):
+            before = getattr(self.cfg.paths, key)
+            after = getattr(new_cfg.paths, key)
+            if after != before:
+                problem = _probe_dir_writable(Path(after))
+                if problem:
+                    self.proto.error(
+                        "E_PATH_NOT_WRITABLE",
+                        f"paths.{key} 不可写：{after}\n  {problem}",
+                        req_id=req_id,
+                    )
+                    return
+
+        try:
+            new_cfg.save(self.config_path)
+        except OSError as exc:
+            self.proto.error(
+                "E_CONFIG_SAVE_FAILED", f"写入 {self.config_path} 失败：{exc}", req_id=req_id
+            )
+            return
+
+        # 模型目录 / 模型名变了 ⇒ 旧的下载器指向旧路径，必须重建
+        if self._downloader is not None and (
+            new_cfg.paths.model_dir != self.cfg.paths.model_dir
+            or new_cfg.runtime.model != self.cfg.runtime.model
+        ):
+            self._downloader.cancel()
+            self._downloader = None
+
+        self.cfg = new_cfg
+        self.config_is_default = False
+        logging.info("配置已保存：%s（warnings=%s）", self.config_path, warnings)
+        self.proto.emit(
+            "config_saved",
+            {
+                "path": str(self.config_path),
+                "config": new_cfg.to_dict(),
+                "warnings": warnings,
+                # Rust 侧据此重启 worker；UI 据此提示「正在应用」
+                "restart_required": True,
+            },
+            req_id,
+        )
+
+    def _cmd_download_model(self, args: dict[str, Any], req_id: str | None) -> None:
+        """启动模型下载。幂等：已在下载则不重复启动。
+
+        进度 / 完成 / 失败 / 取消全部以 `model_download_*` 事件异步推送 ——
+        本命令**不阻塞**（下载 2.88 GiB 要几分钟，阻塞主循环会连心都不跳）。
+        """
+        model = args.get("model") or self.cfg.runtime.model
+        if not isinstance(model, str):
+            self.proto.error("E_BAD_ARGS", "download_model 的 args.model 必须是字符串", req_id=req_id)
+            return
+        if model != self.cfg.runtime.model:
+            self.proto.error(
+                "E_BAD_ARGS",
+                f"模型名不符：请求 {model}，配置里是 {self.cfg.runtime.model}。"
+                "请先在设置里改 runtime.model 并保存。",
+                req_id=req_id,
+            )
+            return
+
+        dl = self._ensure_downloader()
+        if dl.running:
+            self.proto.emit(
+                "model_download_started",
+                {"model": model, "already_running": True, "model_path": str(dl.model_dir)},
+                req_id,
+            )
+            return
+        dl.start()
+
+    def _cmd_cancel_model_download(self, args: dict[str, Any], req_id: str | None) -> None:
+        dl = self._downloader
+        if dl is None or not dl.cancel():
+            # 没有在跑就如实说，不要假装取消成功
+            self.proto.emit(
+                "model_download_cancelled",
+                {"was_running": False, "detail": "当前没有正在进行的下载"},
+                req_id,
+            )
+
+    def _cmd_verify_env(self, args: dict[str, Any], req_id: str | None) -> None:
+        """手动重新校验 GPU（设置页的「重新校验」）。
+
+        为什么需要它：改了 `model_dir` 之后用户想立刻看到结论，而不是「保存 → 重启
+        worker → 等后台验证」。本命令复用启动时那条同一条验证路径。
+        """
+        if self._verify_lock.locked():
+            self.proto.error("E_BUSY", "已有一次环境验证在进行，请稍候", req_id=req_id)
+            return
+        # **先发回执，再起线程**：模型缺失时 `_verify_env` 会立刻返回（不加载模型），
+        # 若先起线程，`env_verified` 可能早于 `env_verify_started` 到达 ——
+        # 前端先清「校验中」再被置回「校验中」，就永远转圈了。
+        self.proto.emit("env_verify_started", {}, req_id)
+        threading.Thread(target=self._verify_env, name="env-verify-manual", daemon=True).start()
+
+    # ---- 设置：内部 ----
+
+    def _ensure_downloader(self) -> model_downloader.ModelDownloader:
+        if self._downloader is None:
+            self._downloader = model_downloader.ModelDownloader(
+                Path(self.cfg.paths.model_dir),
+                self.cfg.runtime.model,
+                self._on_download_event,
+                base_url=self.cfg.download.base_url,
+            )
+        return self._downloader
+
+    def _on_download_event(self, name: str, data: dict[str, Any]) -> None:
+        """下载器事件 → 协议帧。下载器本身不感知协议（与 `core/` 的约定一致）。"""
+        self.proto.emit(name, data)
+        if name == "model_download_done" and "verified" in data:
+            # 下载完成时已经真实加载过模型 —— 顺手把环境态更新掉，
+            # 用户不必再点一次「重新校验」才看到状态栏变绿。
+            self._apply_env_verification(
+                data.get("verified"),
+                str(data.get("detail") or ""),
+                str(data.get("blocked_reason") or ""),
+            )
+
+    def _config_payload(self) -> dict[str, Any]:
+        """`get_config` 的响应体：全量配置 + 元信息。"""
+        cfg = self.cfg
+        model_path = cfg.model_path()
+        missing = env_probe.missing_model_files(model_path)
+        size = 0
+        if model_path.is_dir():
+            try:
+                size = sum(p.stat().st_size for p in model_path.iterdir() if p.is_file())
+            except OSError as exc:  # noqa: PERF203 — 单个文件读不到不该让整页失败
+                logging.warning("统计模型目录大小失败：%s", exc)
+        api_key_env = cfg.summarize.api_key_env
+        return {
+            "path": str(self.config_path),
+            "is_default": self.config_is_default,
+            "config": cfg.to_dict(),
+            "model_path": str(model_path),
+            "model_present": not missing,
+            "model_missing_files": missing,
+            "model_size_bytes": size,
+            "read_only_fields": list(BASELINE_FIELDS),
+            "api_key_env": api_key_env,
+            "api_key_present": bool(os.environ.get(api_key_env)),
+            "pipeline_state": self.dispatcher.state.value,
+            "download": self._downloader.status() if self._downloader else {"running": False},
+        }
+
     # ---- 流水线控制 ----
 
     def _cmd_start(self, args: dict[str, Any], req_id: str | None) -> None:
@@ -626,6 +914,26 @@ class Worker:
         }
 
 
+def _probe_dir_writable(path: Path) -> str | None:
+    """探测目录是否可写：能建目录 + 能建删一个临时文件。
+
+    返回 `None` 表示可写，否则返回可直接展示给用户的原因。
+
+    **为什么要建目录**：用户常把 `model_dir` 指到一个还不存在的目录（例如
+    `D:\\Vidigest\\models`），那是合法意图。这里顺手建出来，而不是回一句
+    「不存在」把人挡住 —— 但建不出来时（不存在的盘、只读、网络盘掉线）
+    必须**如实拒绝**，否则保存成功、下载时才炸，用户不知道是哪一步错了。
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / f".vidigest-write-probe-{os.getpid()}"
+        probe.write_bytes(b"")
+        probe.unlink()
+    except OSError as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
 def _maybe_enable_faulthandler() -> None:
     """`VIDIGEST_FAULTHANDLER=<秒>` 时，定期把所有线程的栈打到 stderr。
 
@@ -699,8 +1007,12 @@ def main() -> int:
     # 打包运行 = 数据目录下的 config.yaml（见 core/paths.py）。
     cfg_path = paths.resolve_config_path()
     cfg, used_default = Config.load_or_default(cfg_path, root=paths.app_root())
+    # 写回的必须与读到的**是同一个文件**，否则「保存了但下次启动没生效」。
+    effective = Path(cfg_path) if cfg_path else Path.cwd() / DEFAULT_CONFIG_NAME
     proto = Protocol(raw_stdout)
-    return Worker(cfg, proto, config_is_default=used_default).serve()
+    return Worker(
+        cfg, proto, config_is_default=used_default, config_path=effective
+    ).serve()
 
 
 if __name__ == "__main__":

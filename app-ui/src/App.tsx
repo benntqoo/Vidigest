@@ -15,11 +15,15 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import "./App.css";
 import { AddTasksBar } from "./components/AddTasksBar";
 import { LogPanel, type LogEntry } from "./components/LogPanel";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { StatusBar } from "./components/StatusBar";
 import { TaskTable } from "./components/TaskTable";
 import * as api from "./worker/client";
 import type { CloseRequest } from "./worker/client";
 import type {
+  AppConfig,
+  ConfigInfo,
+  DownloadState,
   PipelineState,
   TaskSnapshot,
   WorkerEvent,
@@ -51,6 +55,18 @@ function App() {
   /** 确认退出后 worker 还要收尾，界面停一会儿 —— 别让用户以为卡死了 */
   const [shuttingDown, setShuttingDown] = useState(false);
 
+  // ---- 设置与模型（2026-10-24）----
+  /** 设置模态开关。模型未安装时状态栏会直接点进来。 */
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [configInfo, setConfigInfo] = useState<ConfigInfo | null>(null);
+  const [download, setDownload] = useState<DownloadState | null>(null);
+  /** 上一次保存的 warnings（`E_BASELINE_PARAM_CHANGED` 等），由 `config_saved` 给 */
+  const [saveWarnings, setSaveWarnings] = useState<string[]>([]);
+  /** 非 null = 已保存、正在等 worker 重启生效。存开始时刻，用来区分「旧快照的 ready」 */
+  const [applyingSince, setApplyingSince] = useState<number | null>(null);
+  /** 手动重验中（`verify_env` 已发、`env_verified` 未到） */
+  const [verifying, setVerifying] = useState(false);
+
   const pushLog = useCallback(
     (level: LogEntry["level"], msg: string, source?: string) => {
       logSeq.current += 1;
@@ -70,6 +86,20 @@ function App() {
       /* worker 可能尚未 ready，属正常，静默即可 */
     });
   }, []);
+
+  /** 拉配置 + 模型元信息（响应事件 `config`）。 */
+  const refreshConfig = useCallback(() => {
+    api.getConfig().catch(() => {
+      /* worker 尚未 ready 时忽略；设置页会停在「正在读取配置…」 */
+    });
+  }, []);
+
+  /** 打开设置：先拉一次最新配置，避免拿上次的旧值做草稿。 */
+  const openSettings = useCallback(() => {
+    setSettingsOpen(true);
+    setSaveWarnings([]);
+    refreshConfig();
+  }, [refreshConfig]);
 
   const handleEvent = useCallback(
     (ev: WorkerEvent) => {
@@ -140,6 +170,130 @@ function App() {
           refreshTasks();
           break;
         }
+
+        // ---- 设置与模型（2026-10-24）----
+        case "config": {
+          setConfigInfo(ev.data as unknown as ConfigInfo);
+          break;
+        }
+        case "config_saved": {
+          // `config_saved` 之后 Rust 会重启 worker（约 80 ms 后），所以这里
+          // **先用响应体里的 config 更新界面**，不要指望再发一条 get_config ——
+          // 那条命令可能正好落在新旧进程交替的空档里，丢掉。
+          const cfg = ev.data.config as unknown as AppConfig | undefined;
+          if (cfg) {
+            setConfigInfo((prev) =>
+              prev
+                ? { ...prev, config: cfg, path: String(ev.data.path ?? prev.path), is_default: false }
+                : prev,
+            );
+          }
+          setSaveWarnings(Array.isArray(ev.data.warnings) ? (ev.data.warnings as string[]) : []);
+          setApplyingSince(Date.now());
+          pushLog("info", "配置已保存，正在重启 worker 以生效");
+          break;
+        }
+        case "model_download_started": {
+          setDownload({
+            phase: "running",
+            doneBytes: Number(ev.data.already_bytes ?? 0),
+            totalBytes: Number(ev.data.total_bytes ?? 0),
+            pct:
+              Number(ev.data.total_bytes ?? 0) > 0
+                ? Number(ev.data.already_bytes ?? 0) / Number(ev.data.total_bytes)
+                : 0,
+            speed: 0,
+            eta: 0,
+          });
+          pushLog("info", `开始下载模型 ${String(ev.data.model ?? "")}`.trim());
+          break;
+        }
+        case "model_download_progress": {
+          const d = ev.data;
+          setDownload({
+            phase: "running",
+            doneBytes: Number(d.done_bytes ?? 0),
+            totalBytes: Number(d.total_bytes ?? 0),
+            pct: Number(d.overall_pct ?? 0),
+            speed: Number(d.bytes_per_sec ?? 0),
+            eta: Number(d.eta_sec ?? 0),
+            file: d.file as string | undefined,
+            fileIndex: Number(d.file_index ?? 0),
+            fileCount: Number(d.file_count ?? 0),
+          });
+          break;
+        }
+        case "model_download_verifying": {
+          setDownload((prev) =>
+            prev ? { ...prev, phase: "verifying", pct: 1 } : {
+              phase: "verifying",
+              doneBytes: 0,
+              totalBytes: 0,
+              pct: 1,
+              speed: 0,
+              eta: 0,
+            },
+          );
+          break;
+        }
+        case "model_download_done": {
+          setDownload((prev) => ({
+            phase: "done",
+            doneBytes: Number(ev.data.total_bytes ?? prev?.doneBytes ?? 0),
+            totalBytes: Number(ev.data.total_bytes ?? prev?.totalBytes ?? 0),
+            pct: 1,
+            speed: 0,
+            eta: 0,
+            verified: (ev.data.verified as boolean | null) ?? null,
+            detail: String(ev.data.detail ?? ""),
+            elapsedSec: Number(ev.data.elapsed_sec ?? 0),
+          }));
+          setVerifying(false);
+          pushLog(
+            ev.data.verified === true ? "info" : "warning",
+            `模型下载完成：${String(ev.data.detail ?? "")}`,
+          );
+          // 下完再拉一次：`model_present` / 大小 / 缺失文件列表都变了
+          refreshConfig();
+          break;
+        }
+        case "model_download_failed": {
+          setDownload((prev) => ({
+            phase: "failed",
+            doneBytes: prev?.doneBytes ?? 0,
+            totalBytes: prev?.totalBytes ?? 0,
+            pct: prev?.pct ?? 0,
+            speed: 0,
+            eta: 0,
+            code: String(ev.data.code ?? "E_?"),
+            detail: String(ev.data.detail ?? ""),
+          }));
+          pushLog("error", `模型下载失败 ${String(ev.data.code ?? "")}：${String(ev.data.detail ?? "")}`);
+          break;
+        }
+        case "model_download_cancelled": {
+          setDownload((prev) => ({
+            phase: "cancelled",
+            doneBytes: prev?.doneBytes ?? 0,
+            totalBytes: prev?.totalBytes ?? 0,
+            pct: prev?.pct ?? 0,
+            speed: 0,
+            eta: 0,
+            detail: String(ev.data.detail ?? ""),
+          }));
+          pushLog("warning", "模型下载已取消");
+          break;
+        }
+        case "env_verified": {
+          // 手动重验的收尾。`gpu_usable` 的三态语义由 StatusBar 负责解释，
+          // 这里只关心「不再转圈」。
+          setVerifying(false);
+          break;
+        }
+        case "env_verify_started": {
+          setVerifying(true);
+          break;
+        }
         default:
           break;
       }
@@ -194,6 +348,31 @@ function App() {
     },
     [pushLog],
   );
+
+  /**
+   * 「已保存 → 正在生效」的收尾。
+   *
+   * 为什么不能只看 `worker.state === "ready"`：保存那一刻前端手里的快照通常还是
+   * 上一代的 `ready`，重启还没开始。所以要求「距保存 > 2 秒」，再有一个 15 秒的
+   * 兜底（重启失败时不能让横幅永远挂着）。
+   */
+  useEffect(() => {
+    if (applyingSince === null) return;
+    const tick = () => {
+      const waited = Date.now() - applyingSince;
+      if (waited > 15000) {
+        setApplyingSince(null);
+        return;
+      }
+      if (waited > 2000 && worker?.state === "ready") {
+        setApplyingSince(null);
+        pushLog("info", "配置已生效（worker 已重启）");
+        refreshConfig();
+      }
+    };
+    const id = window.setInterval(tick, 500);
+    return () => window.clearInterval(id);
+  }, [applyingSince, worker?.state, pushLog, refreshConfig]);
 
   const ordered = useMemo(
     () => Object.values(tasks).sort((a, b) => a.task_id - b.task_id),
@@ -266,12 +445,19 @@ function App() {
 
         <span className="spacer" />
 
+        <button
+          className="mini"
+          onClick={openSettings}
+          title="设置：模型 / 路径 / 运行 / 转写 / 抽帧 / 汇总 / 下载"
+        >
+          设置
+        </button>
         <button className="mini" onClick={() => refreshTasks()} title="重新拉取任务表">
           刷新
         </button>
       </header>
 
-      <StatusBar worker={worker} pipeline={pipeline} />
+      <StatusBar worker={worker} pipeline={pipeline} onOpenSettings={openSettings} />
 
       <TaskTable
         tasks={ordered}
@@ -290,6 +476,33 @@ function App() {
       />
 
       <LogPanel entries={logs} onClear={() => setLogs([])} />
+
+      {settingsOpen && (
+        <SettingsDialog
+          info={configInfo}
+          download={download}
+          pipeline={pipeline}
+          applying={applyingSince !== null}
+          warnings={saveWarnings}
+          workerState={worker?.state}
+          verifying={verifying}
+          onClose={() => setSettingsOpen(false)}
+          onSave={(patch) => {
+            setVerifying(false);
+            run("保存配置", api.setConfig(patch));
+          }}
+          onReload={refreshConfig}
+          onDownload={() => {
+            setDownload({ phase: "running", doneBytes: 0, totalBytes: 0, pct: 0, speed: 0, eta: 0 });
+            run("下载模型", api.downloadModel());
+          }}
+          onCancelDownload={() => run("取消下载", api.cancelModelDownload())}
+          onVerify={() => {
+            setVerifying(true);
+            run("重新校验 GPU", api.verifyEnv());
+          }}
+        />
+      )}
 
       {/*
         关闭确认（`PLAN §7.2` 第 3 条）。Rust 侧已经 `prevent_close` 了，

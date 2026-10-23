@@ -170,8 +170,12 @@ def cmd_env(args: argparse.Namespace) -> int:
         device = cfg.runtime.effective_device(True)
         compute = cfg.runtime.effective_compute_type(device)
         print(f"真实推理验证：device={device} compute_type={compute}（约 5 秒）")
-        ok, detail = env_probe.verify_cuda(cfg.model_path(), device=device, compute_type=compute)
-        print(f"结果     : {'✅ GPU 可用' if ok else '❌ 不可用'} —— {detail}")
+        ok, detail, _reason = env_probe.verify_cuda(
+            cfg.model_path(), device=device, compute_type=compute
+        )
+        # 三态：None = 没验成（例如模型没装），不是「不可用」（PLAN §9.1）
+        verdict = "✅ GPU 可用" if ok is True else ("❌ 不可用" if ok is False else "⚠️ 未能验证")
+        print(f"结果     : {verdict} —— {detail}")
     else:
         print("-" * 62)
         print("提示：加 --verify 可跑一次真实推理确认 CUDA 真的能用（约 5 秒）。")

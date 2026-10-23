@@ -46,6 +46,18 @@ export interface WorkerState {
    * 所以前端挂载时能一次性拿到，不必等下一次状态跃迁。
    */
   pipeline_state: PipelineState | null;
+  /**
+   * **为什么没能验证 GPU**：`model_missing` / `model_incomplete` /
+   * `import_failed` / `cuda_load_failed` / `cuda_inference_failed` / `verify_timeout`。
+   *
+   * ⚠️ 只在 `gpu_usable === null` 时有意义。它是「没验成」的原因，
+   * 与「验过，确实不能用」（`gpu_usable === false`）是两件事 ——
+   * 2026-10-24 的误报就是这两者被混成一个 `false`，界面显示「GPU 不可用」，
+   * 把用户引向驱动排查，方向完全错。
+   */
+  blocked_reason: string | null;
+  /** 验证结论的原始说明，状态栏 tooltip 用 */
+  env_detail: string | null;
 }
 
 export interface Concurrency {
@@ -146,4 +158,107 @@ export function formatDuration(sec: number | null | undefined): string {
 export function formatProgress(p: number): string | null {
   if (!Number.isFinite(p) || p < 0) return null;
   return `${Math.round(p * 100)}%`;
+}
+
+// ------------------------------------------------------------ 设置与模型
+
+/**
+ * 配置文件结构（`app/models/config.py` 的镜像）。
+ *
+ * ⚠️ 只有 `get_config` 会返回这份东西；写回走 `set_config` 的**部分更新**，
+ * 不是整份覆盖。`cookie` 段刻意不在这里 —— 它不在 `EDITABLE_SECTIONS` 里，
+ * 界面无从修改（cookie 采集是阶段 4 的事）。
+ */
+export interface AppConfig {
+  paths: {
+    work_dir: string;
+    model_dir: string;
+    ffmpeg: string | null;
+    yt_dlp: string | null;
+    cookies_file: string | null;
+  };
+  runtime: {
+    device: string;
+    compute_type: string;
+    model: string;
+    auto_concurrency: boolean;
+    max_download: number;
+    max_frame: number;
+    max_summarize: number;
+  };
+  transcribe: {
+    language: string;
+    beam_size: number;
+    vad_filter: boolean;
+    vad_min_silence_ms: number;
+    initial_prompt: string;
+  };
+  frames: {
+    enabled: boolean;
+    scene_threshold: number;
+    max_frames: number;
+    sheet_cols: number;
+    sheet_rows: number;
+  };
+  summarize: {
+    enabled: boolean;
+    base_url: string;
+    api_key_env: string;
+    model: string;
+    template: string;
+  };
+  download: {
+    rate_limit_per_min: number;
+    keep_intermediate: boolean;
+    base_url: string | null;
+  };
+}
+
+/** `get_config` 的响应（规格 §3.1） */
+export interface ConfigInfo {
+  path: string;
+  is_default: boolean;
+  config: AppConfig;
+  model_path: string;
+  model_present: boolean;
+  model_missing_files: string[];
+  model_size_bytes: number;
+  /** `transcribe.beam_size` 等「改了会让 662 段基线失效」的字段 */
+  read_only_fields: string[];
+  api_key_env: string;
+  api_key_present: boolean;
+  pipeline_state: PipelineState;
+  download: { running?: boolean };
+}
+
+/** 模型下载的界面状态。事件是增量推送的，这里合成一个可渲染的快照。 */
+export interface DownloadState {
+  phase: "idle" | "running" | "verifying" | "done" | "failed" | "cancelled";
+  file?: string;
+  fileIndex?: number;
+  fileCount?: number;
+  doneBytes: number;
+  totalBytes: number;
+  /** 0..1；0 表示「还不知道总量」 */
+  pct: number;
+  /** 字节/秒 */
+  speed: number;
+  /** 剩余秒数；0 表示算不出来 */
+  eta: number;
+  detail?: string;
+  code?: string;
+  verified?: boolean | null;
+  elapsedSec?: number;
+}
+
+export function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "--";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${i === 0 ? Math.round(v) : v.toFixed(2)} ${units[i]}`;
 }

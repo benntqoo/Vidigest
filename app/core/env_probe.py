@@ -27,6 +27,37 @@ from typing import Iterable
 # 探测超时：nvidia-smi 偶发卡住，不能让它拖死整个自检
 _NVIDIA_SMI_TIMEOUT = 15
 
+#: faster-whisper 必需的文件名。
+#:
+#: **放这里而不是放在下载器里**：`verify_cuda` 要用它判「模型是否完整」，
+#: 下载器要用它决定下什么。下载器导入本模块，本模块不导入下载器 —— 单向依赖。
+MODEL_FILES: tuple[str, ...] = (
+    "config.json",
+    "preprocessor_config.json",
+    "tokenizer.json",
+    "vocabulary.json",
+    "model.bin",
+)
+
+#: `verify_cuda` 的失败原因码（协议 `blocked_reason` 的取值）。
+#:
+#: 前两个是**「没验成」**（`ok=None`），后三个是**「验了，不能用」**（`ok=False`）。
+#: 两者的区别就是 2026-10-24 那次「GPU 不可用」误报的根源：模型没装被显示成
+#: GPU 坏了，用户据此去查驱动，方向完全错。
+REASON_MODEL_MISSING = "model_missing"
+REASON_MODEL_INCOMPLETE = "model_incomplete"
+REASON_IMPORT_FAILED = "import_failed"
+REASON_CUDA_LOAD_FAILED = "cuda_load_failed"
+REASON_CUDA_INFERENCE_FAILED = "cuda_inference_failed"
+
+
+def missing_model_files(model_dir: str | Path) -> list[str]:
+    """返回模型目录里**缺**的必需文件。目录不存在时返回全部。"""
+    d = Path(model_dir)
+    if not d.is_dir():
+        return list(MODEL_FILES)
+    return [name for name in MODEL_FILES if not (d / name).is_file()]
+
 
 @dataclass
 class CpuInfo:
@@ -293,8 +324,23 @@ def verify_cuda(
     model_path: str | Path,
     device: str = "cuda",
     compute_type: str = "float16",
-) -> tuple[bool, str]:
-    """跑一次**真实推理**确认 CUDA 可用，返回 (是否可用, 说明)。
+) -> tuple[bool | None, str, str]:
+    """跑一次**真实推理**确认 CUDA 可用，返回 `(是否可用, 说明, 原因码)`。
+
+    ⚠️ **`ok` 是三态，`None` 不是「否」**：
+
+    | 情形 | `ok` | `reason` |
+    |---|---|---|
+    | 模型目录不存在 | `None` | `model_missing` |
+    | 模型目录在但缺文件 | `None` | `model_incomplete` |
+    | 原生依赖导入失败 | `False` | `import_failed` |
+    | 模型加载失败（CUDA 运行库？） | `False` | `cuda_load_failed` |
+    | 能加载但推理失败 | `False` | `cuda_inference_failed` |
+    | 通过 | `True` | `""` |
+
+    为什么必须分开：2026-10-24 安装版首启，模型没装（`ok=False` + 一句「模型不存在」）
+    被上层读成「GPU 不可用」，界面红字写「吞吐下降约 6 倍」——**结论是错的**，
+    用户按这个提示去查驱动永远修不好。`None` = 没验成，`False` = 验过确实不行。
 
     为什么不能用 `get_cuda_device_count()`：它只枚举硬件，即使 cuBLAS/cuDNN
     缺失也会返回 1。唯一可信的判据是「模型能加载 + 能出结果」。
@@ -308,8 +354,19 @@ def verify_cuda(
     import app.core.cuda_dll  # noqa: F401 — 必须在 faster_whisper 之前
 
     model_dir = Path(model_path)
-    if not model_dir.exists():
-        return False, f"模型不存在：{model_dir}（按 README 第 3 步下载）"
+    if not model_dir.is_dir():
+        return (
+            None,
+            f"模型目录不存在：{model_dir}（未验证，不是 GPU 不可用）",
+            REASON_MODEL_MISSING,
+        )
+    missing = missing_model_files(model_dir)
+    if missing:
+        return (
+            None,
+            f"模型文件不完整：缺 {', '.join(missing)}（未验证，不是 GPU 不可用）",
+            REASON_MODEL_INCOMPLETE,
+        )
 
     t0 = time.monotonic()
 
@@ -323,25 +380,33 @@ def verify_cuda(
     try:
         import numpy as np
     except Exception as exc:  # noqa: BLE001
-        return False, f"导入 numpy 失败：{type(exc).__name__}: {exc}"
+        return False, f"导入 numpy 失败：{type(exc).__name__}: {exc}", REASON_IMPORT_FAILED
     _tick("numpy 导入完成")
 
     try:
         import ctranslate2  # noqa: F401 — 显式导入，把它的耗时与 faster_whisper 的区分开
     except Exception as exc:  # noqa: BLE001
-        return False, f"导入 ctranslate2 失败：{type(exc).__name__}: {exc}"
+        return False, f"导入 ctranslate2 失败：{type(exc).__name__}: {exc}", REASON_IMPORT_FAILED
     _tick("ctranslate2 导入完成")
 
     try:
         from faster_whisper import WhisperModel
     except Exception as exc:  # noqa: BLE001
-        return False, f"导入 faster_whisper 失败：{type(exc).__name__}: {exc}"
+        return (
+            False,
+            f"导入 faster_whisper 失败：{type(exc).__name__}: {exc}",
+            REASON_IMPORT_FAILED,
+        )
     _tick("faster_whisper 导入完成")
 
     try:
         model = WhisperModel(str(model_dir), device=device, compute_type=compute_type)
     except Exception as exc:  # noqa: BLE001
-        return False, f"模型加载失败（CUDA 运行库不可用？）：{type(exc).__name__}: {exc}"
+        return (
+            False,
+            f"模型加载失败（CUDA 运行库不可用？）：{type(exc).__name__}: {exc}",
+            REASON_CUDA_LOAD_FAILED,
+        )
     _tick("模型加载完成")
 
     try:
@@ -349,10 +414,10 @@ def verify_cuda(
         segments, info = model.transcribe(silence, language="zh", beam_size=1)
         list(segments)  # 生成器必须被消费，否则推理根本没执行
     except Exception as exc:  # noqa: BLE001
-        return False, f"推理失败：{type(exc).__name__}: {exc}"
+        return False, f"推理失败：{type(exc).__name__}: {exc}", REASON_CUDA_INFERENCE_FAILED
     _tick("推理完成")
 
-    return True, f"真实推理通过（输入 {info.duration:.1f}s，device={device}）"
+    return True, f"真实推理通过（输入 {info.duration:.1f}s，device={device}）", ""
 
 
 def dumps(report: EnvReport) -> str:

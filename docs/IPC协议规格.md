@@ -82,6 +82,11 @@ logging.basicConfig(stream=sys.stderr, ...)
 | `retry_task` | `{"task_id": 7}` | `task_update` | 重置失败项到上一稳定态并重新入队 |
 | `list_tasks` | `{}` | `task_list` | 拉取全量任务快照（Rust 启动时同步一次） |
 | `get_concurrency` | `{}` | `concurrency` | 查询当前实际并发数（用于状态栏展示） |
+| `get_config` | `{}` | `config` | 全量配置 + 元信息（模型路径 / 是否齐全 / 大小 / 只读字段 / 密钥是否就位）。**v1.2 新增** |
+| `set_config` | `{"patch": {<section>: {<key>: <value>}}}` | `config_saved` | 部分更新配置。**写盘后必须重启 worker 才生效**（§3.2）。**v1.2 新增** |
+| `download_model` | `{"model": "large-v3"}` | `model_download_started` → `model_download_*` | 下载模型（约 2.9 GiB），异步推事件。幂等：已在下载则不重复启动。**v1.2 新增** |
+| `cancel_model_download` | `{}` | `model_download_cancelled` | 取消下载，线程在下一个 chunk 边界退出并删 `.part`。**v1.2 新增** |
+| `verify_env` | `{}` | `env_verify_started` → `env_verified` | 手动重跑一次 GPU 真实验证（设置页「重新校验」）。**v1.2 新增** |
 | `shutdown` | `{}` | `bye` | 优雅退出：停止取新任务 → 等待在跑的完成（最长 30s）→ 退出 |
 
 **未知命令**：回 `error`，`code = "E_UNKNOWN_CMD"`，**不退出进程**。
@@ -114,13 +119,128 @@ logging.basicConfig(stream=sys.stderr, ...)
 
 ---
 
+## 3.2 设置与模型（v1.2 新增，2026-10-24）
+
+### 3.2.1 `set_config` 的语义与安全边界
+
+`patch` 是**部分更新**：只写给出的 section / key，其余保持不变。深度只有两层
+（`<section>.<key>`），不做更深合并 —— 配置本身就只有两层。
+
+**白名单（实现里就是白名单，不是黑名单）**：只接受下列 section
+（`app/rpc.py::EDITABLE_SECTIONS`），且 key 必须是该 section 的 dataclass 字段：
+
+```
+paths / runtime / transcribe / frames / summarize / download
+```
+
+未知 section → `warnings` 里 `E_UNKNOWN_SECTION:<name>`；未知 key →
+`E_UNKNOWN_KEY:<section>.<key>`。两者都**丢弃不写盘**。
+
+四条硬规则：
+
+1. **`summarize.api_key` 永不允许写入** —— 密钥只走环境变量
+   （`api_key_env` 指定变量名）。传了也只回 `E_API_KEY_NOT_ALLOWED`，磁盘上不会出现。
+2. **`paths.work_dir` / `model_dir` / `cookies_file` 一律存绝对路径**：相对路径按
+   配置文件所在目录解析。否则打包运行时 `cwd` 是安装目录，相对路径会漂到那里。
+3. **`paths.work_dir` / `model_dir` 改动前做可写探测**（建目录 + 建删临时文件），
+   失败回 `error{code:"E_PATH_NOT_WRITABLE"}` 且**不写盘**。
+4. **改 `transcribe.beam_size` / `vad_min_silence_ms` 必须警告**：
+   `warnings` 含 `E_BASELINE_PARAM_CHANGED:<field>`。这两个参数决定分段边界，
+   改了 `samples/transcript_gpu.txt` 的 662 段金标准基线就失效 —— 那不是 bug。
+
+`validate()` 失败（例如 `runtime.device = "tpu"`）→ `error{code:"E_BAD_ARGS"}`，**不写盘**。
+写盘失败 → `error{code:"E_CONFIG_SAVE_FAILED"}`。
+
+> ⚠️ 保存用 `yaml.safe_dump` 重写整个文件，**手写注释不会保留**（现状如此）。
+
+### 3.2.2 保存即重启（D-S1）
+
+```
+前端保存 → set_config → Python 深合并 + validate + 写盘 → config_saved
+       → Rust 收到 config_saved → 80 ms 后 restart()
+       → 新 worker hello → ready（带新的 gpu_usable / concurrency）
+```
+
+**为什么不做热应用**：`Config` 只在进程启动时读一次，`Dispatcher` 的并发、
+模型缓存、线程池都按它算好了。热应用要重建这一整套，每条都是新的 bug 面；
+而重启只要 2–3 秒。
+
+**Rust 侧只在这一条事件上重启**，不在 `worker_send` 里无脑重启。
+`config_saved` 必须先转发给前端再重启，否则用户看到的是「点了保存，界面只在转圈」。
+
+⚠️ 重启会中断正在跑的任务 ⇒ 前端在 `pipeline_state !== "idle"` 时把设置页设为只读。
+
+### 3.2.3 三态布尔与 `blocked_reason`
+
+`env_verified` 的 `gpu_usable` 是**三态**：
+
+| 值 | 含义 | `blocked_reason` |
+|---|---|---|
+| `true` | 验过，能用 | `null` |
+| `false` | 验过，确实不能用（CUDA 运行库 / 推理失败） | `null` |
+| `null` | **没验成**（环境缺失，不是硬件坏了） | 非空，见下表 |
+
+`blocked_reason` 取值（`app/core/env_probe.py` 的 `REASON_*`）：
+
+| 值 | 含义 | `gpu_usable` |
+|---|---|---|
+| `model_missing` | 模型目录不存在 | `null` |
+| `model_incomplete` | 目录在但缺文件 | `null` |
+| `verify_timeout` | 验证超时（原生加载挂起） | `null` |
+| `import_failed` | 原生依赖导入失败 | `false` |
+| `cuda_load_failed` | 模型加载失败 | `false` |
+| `cuda_inference_failed` | 能加载但推理失败 | `false` |
+
+> 🔴 **两者不可互换**。2026-10-24 安装版首启的误报就是把它俩混成了 `false`：
+> 模型没装 → 界面写「GPU 不可用 / 吞吐下降约 6 倍」→ 用户去查驱动，方向全错。
+> UI 见 `gpu_usable === null && blocked_reason ∈ {model_missing, model_incomplete}`
+> 时必须显示「模型未安装」并给出下载入口。
+
+`gpu_verified` 与它保持一致：`gpu_usable !== null` 才为 `true`。
+
+### 3.2.4 模型下载：事件流与续传
+
+```
+download_model
+  → model_download_started   {model, model_path, total_bytes, file_count, already_bytes}
+  → model_download_progress  {file, file_index, file_count, done_bytes, total_bytes,
+                              overall_pct, file_done_bytes, file_total_bytes,
+                              bytes_per_sec, eta_sec}
+  → model_download_verifying {detail}
+  → model_download_done      {model, model_path, total_bytes, elapsed_sec,
+                              verified, detail, blocked_reason}
+```
+
+失败 / 取消：`model_download_failed {code, detail}`、`model_download_cancelled {detail}`。
+
+- **文件清单**（`env_probe.MODEL_FILES`）：`config.json`、`preprocessor_config.json`、
+  `tokenizer.json`、`vocabulary.json`、`model.bin`（合计约 2.88 GiB）
+- **续传**：每文件先写 `<name>.part`，完成后 `os.replace` 原子改名；重下时带
+  `Range: bytes=<part 长度>-`。服务端忽略 Range（返回 200）时清空重写，
+  不会把完整内容追加到半成品后面
+- **节流**：`≥ 200 ms` 或 `≥ 1%` 才发一次（`model.bin` 按 256 KiB 分块约 1.2 万次读取）
+- **校验 = 大小比对 + 一次真实加载**（`verify_cuda`），不是哈希 —— 无权威 sha256
+  来源，而「能加载并跑出结果」是比哈希更强的判据
+- **磁盘预检**：空间不足直接 `E_DISK_FULL`，**不开始传输**
+- **`done_bytes` / `total_bytes` / `overall_pct` 是整体进度**，
+  `file_*` 才是当前文件 —— 进度条用整体，那行「第 3/5 个：tokenizer.json」用当前文件
+
+下载线程**独立于 `Dispatcher`**：不属于任务流水线，不该被 `pause` / `cancel_task` 影响，
+且必须在 `start` 之前就能用。
+
+---
+
 ## 4. 事件清单（Python → Rust）
 
 | `name` | `data` 字段 | 说明 |
 |---|---|---|
 | `ready` | `{"server_version", "protocol", "gpu_usable", "gpu_verified", "concurrency": {"n_asr","n_dl","n_frame","n_sum"}, "pipeline_state", "db_path", "config_is_default"}` | 握手完成。**快速返回，不阻塞**（GPU 真实验证是异步的，见 §4.2） |
-| `env_verified` | `{"gpu_usable", "detail", "concurrency"}` | GPU **真实推理验证**结果。异步推送，见 §4.2 |
+| `env_verified` | `{"gpu_usable", "gpu_verified", "detail", "blocked_reason", "concurrency"}` | GPU **真实推理验证**结果。异步推送，见 §4.2。`gpu_usable` 是三态，`blocked_reason` 说明「为什么没验成」，见 §3.2.3 |
 | `pong` | `{}` | 心跳响应 |
+| `config` | `{"path","is_default","config","model_path","model_present","model_missing_files","model_size_bytes","read_only_fields","api_key_env","api_key_present","pipeline_state","download"}` | `get_config` 的响应，见 §3.2 |
+| `config_saved` | `{"path","config","warnings": [...], "restart_required": true}` | `set_config` 的响应。**Rust 收到后重启 worker**，见 §3.2.2 |
+| `model_download_started` / `_progress` / `_verifying` / `_done` / `_failed` / `_cancelled` | 见 §3.2.4 | 模型下载事件流 |
+| `env_verify_started` | `{}` | `verify_env` 的命令回执；随后会来一条 `env_verified` |
 | `tasks_added` | `{"added": [{"task_id","url","title"}], "skipped": [{"url","reason"}]}` | `reason`: `duplicate` \| `bad_url` \| `unsupported` |
 | `task_removed` | `{"task_id": 7}` | — |
 | `started` / `paused` / `resumed` | `{}` | — |
@@ -320,9 +440,21 @@ stdout 写入     → 加锁后单线程写入（JSON Lines 天然按行独立�
 | 17 | 优雅关闭 `shutdown→bye` | 收到 `bye` |
 | 18 | 退出码为 0 | worker 自行 `exit(0)` |
 | 19 | **EOF 自杀（3 s 内）** | 关掉 stdin 模拟宿主消失，worker 必须自行退出，不留孤儿。实测 0.02 s |
+| 20 | `get_config` | 返回全量配置 + 模型元信息（12 个字段齐全） |
+| 21 | `set_config` 拒写 `summarize.api_key` | 回 `E_API_KEY_NOT_ALLOWED`，响应与磁盘都没有该键 |
+| 22 | `set_config` 未知段丢弃并警告 | `warnings` 含 `E_UNKNOWN_SECTION:*` |
+| 23 | `set_config` 基线参数改动 | `warnings` 含 `E_BASELINE_PARAM_CHANGED:*` 且**已落盘** |
+| 24 | `set_config` 非法值 | `E_BAD_ARGS` 且**文件未被改写**（逐字节比对） |
+| 25 | `env_verified` 的 `gpu_verified` 与三态一致 | `gpu_verified == (gpu_usable is not None)` |
+| 26 | `verify_env` 手动复核 | 回 `env_verify_started`，随后 `env_verified` |
+| 27 | `verify_cuda`：模型缺失 | 返回 `(None, "model_missing")`，**不是 `False`** |
+| 28 | `verify_cuda`：模型不完整 | 返回 `(None, "model_incomplete")` |
 
 **判据 1 是最有价值的一条**：它用一个断言覆盖了「任何地方不小心 `print` 到 stdout」这一整类
 协议污染事故。新增任何代码后重跑它，成本几秒。
+
+**判据 27/28 是 2026-10-24 误报的回归闸门**：它们不需要加载模型，秒级完成，
+却直接锁住「模型缺失 ≠ GPU 不可用」这条语义。改 `verify_cuda` 的返回值之前先看这两条。
 
 > ⚠️ **判据 19 曾经「存在但不被报告」**（2026-10-03 修复）。它单开一个 worker（因为要自杀，
 > 不能复用主流程那个），却把结果 `record` 到自己身上，而 `main()` 只打印主 host 的判据
@@ -349,6 +481,7 @@ stdout 写入     → 加锁后单线程写入（JSON Lines 天然按行独立�
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-24 | v1.3 | 设置界面 + 模型下载：① 命令表新增 5 条（`get_config` / `set_config` / `download_model` / `cancel_model_download` / `verify_env`），新增 §3.2 详述白名单、保存即重启（D-S1）、三态布尔与 `blocked_reason`、下载事件流与续传；② `env_verified` 增 `gpu_verified` 与 `blocked_reason`；③ **语义更正**：`gpu_usable=false` 只表示「验过，确实不能用」，`null` 且 `blocked_reason` 非空表示「因环境缺失没能验」——2026-10-24 安装版首启的「GPU 不可用」误报正是这两者被混为一谈；④ §9 判据 19 → **28** 条 |
 | 2026-10-02 | v1 | 首版。确立 stdio + JSON Lines、命令/事件清单、状态语义、心跳、进程回收与验收判据 |
 | 2026-10-06 | v1.2 | 语义更正（卡死缺陷修复的配套）：① `pipeline_state` 按 §4 本义「状态跃迁」补齐**终态推送**（→idle 于批次收敛、→aborted 于整批中止），此前实现只在 start/pause/resume 时推送，UI 开始按钮会永久灰死；② 空队列 `start` 落 idle 而非 running（与 `resume()` 的条件式语义对齐）；③ 中止后单次 `start` 可恢复（`_cmd_start` 改为先 start 后 submit，`_put` 感知 ABORTED，队列条目倒回 pending）。§9 判据 11/12/13 同步更正 |
 | 2026-10-03 | v1.1 | ① 新增 `cancelled` 状态与 §3.1 取消语义（协作式取消、检查点位置、两条硬要求）；② 事件清单补齐调度器事件：`pipeline_state` / `resource_warning` / `batch_aborted` / `batch_done`，`task_update` 之外的控制面事件改名映射（`dispatcher` 只报事实，名字翻译在 `rpc.py` 的 `EVENT_NAMES`）；③ `ready` 增 `pipeline_state`；④ §4.1 补限流落地常量与「限流在调度器做，不在 rpc 做」的理由；⑤ §9 判据从 8 条扩到 19 条（含新修好的 EOF 判据），并标注两条**尚未覆盖**的项（转写进行中的心跳、控制面事件在真实批次下的时序）；⑥ `E_NOT_IMPLEMENTED` 已无命令返回 |

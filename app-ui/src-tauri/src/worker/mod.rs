@@ -147,6 +147,16 @@ pub struct StateSnapshot {
     /// 直到下一个 `pipeline_state` 事件到达。规格 §4 的 `ready` 事件本来就带
     /// `pipeline_state`，所以这里补上是「按已有契约实现」，不是新增契约。
     pub pipeline_state: Option<String>,
+    /// **为什么没能验证 GPU** —— `model_missing` / `model_incomplete` /
+    /// `import_failed` / `cuda_load_failed` / `cuda_inference_failed`。
+    ///
+    /// ⚠️ 只有 `gpu_usable == None` 时它才有意义。它是「没验成」的具体原因，
+    /// 与「验过，确实不能用」（`gpu_usable == Some(false)`）是两件事 ——
+    /// 2026-10-24 的误报就是这两者被混成了同一个 `false`，界面据此
+    /// 显示「吞吐下降约 6 倍」，把用户引向驱动排查，方向完全错。
+    pub blocked_reason: Option<String>,
+    /// 验证结论的原始说明（Python 侧 `env_verified.detail`）。状态栏 tooltip 用。
+    pub env_detail: Option<String>,
 }
 
 impl StateSnapshot {
@@ -161,6 +171,8 @@ impl StateSnapshot {
             alive: false,
             restart_count: 0,
             pipeline_state: None,
+            blocked_reason: None,
+            env_detail: None,
         }
     }
 
@@ -212,6 +224,16 @@ struct Inner {
     /// 就会以为自己是当前那一代，于是**两个心跳线程同时 ping 同一个 worker**
     /// ——`missed_pongs` 会被数两遍，worker 提前被判死。
     heartbeat_gen: AtomicU64,
+    /// 子进程的代号。每次 `spawn_worker` 自增，**读线程带着自己出生时的代号**。
+    ///
+    /// **为什么必须有**：`on_worker_exit` 里会 `child.lock().wait()` —— 如果旧一代的
+    /// 读线程在「用户重启 / 配置保存后重启」之后才 EOF，它拿到的是**新一代的**
+    /// `child`，于是 `wait()` 会一直阻塞到新 worker 退出，同时把 `alive` 置 false、
+    /// 状态改成「意外退出」并触发一次多余的自动重启。
+    /// 表现就是「重启完界面显示 worker 已退出，但其实进程好好活着」。
+    /// （原代码只在「worker 已死」时才允许手动重启，所以这个坑一直没被踩到；
+    /// 2026-10-24「保存配置即重启」让它成了一条正常路径，必须先堵上。）
+    child_gen: AtomicU64,
     /// 已自动重启次数。**这是 `restart_count` 的唯一真源**；
     /// 快照里的那个字段在 `emit_state` 时从这里同步过去，避免两处各记一份。
     restart_count: AtomicU32,
@@ -281,6 +303,7 @@ impl Worker {
             shutting_down: AtomicBool::new(false),
             stop_heartbeat: AtomicBool::new(false),
             heartbeat_gen: AtomicU64::new(0),
+            child_gen: AtomicU64::new(0),
             restart_count: AtomicU32::new(0),
             fatal: AtomicBool::new(false),
             close_confirmed: AtomicBool::new(false),
@@ -464,6 +487,8 @@ impl Worker {
     // ---------------------------------------------------------------- spawn
 
     fn spawn_worker(&self) {
+        // 本代代号，读线程要带着它去收尾（见 `Inner::child_gen`）。
+        let gen = self.inner.child_gen.fetch_add(1, Ordering::SeqCst) + 1;
         let target = match locator::locate() {
             Ok(t) => t,
             Err(msg) => {
@@ -528,6 +553,8 @@ impl Worker {
             snap.server_version = None;
             snap.gpu_usable = None;
             snap.gpu_verified = None;
+            snap.blocked_reason = None;
+            snap.env_detail = None;
             snap.concurrency = None;
         }
         self.inner.emit_state();
@@ -551,7 +578,7 @@ impl Worker {
                         }
                     }
                 }
-                inner.on_worker_exit();
+                inner.on_worker_exit(gen);
             });
         }
 
@@ -666,6 +693,15 @@ impl Inner {
             return; // pong 不必转给前端
         }
 
+        // 配置保存成功 ⇒ **必须重启 worker 才生效**（D-S1，见
+        // `docs/设置界面与模型下载_执行单.md`）。Python 侧的 `Config` 只在进程启动时
+        // 读一次，`Dispatcher` 的并发与模型缓存都按它算好了；热应用要重建调度器、
+        // 重算并发、清模型缓存，每条都是新的 bug 面，而重启只要 2-3 秒。
+        //
+        // ⚠️ **只在这个事件上重启**，不要在 `worker_send` 里无脑重启 ——
+        // 那样每条命令都会重启一次。
+        let restart_for_config = ev.name == "config_saved";
+
         // 状态类事件：同步到快照，让 `worker_state` 命令能返回最新值
         match ev.name.as_str() {
             "ready" => {
@@ -686,7 +722,13 @@ impl Inner {
             "env_verified" => {
                 let mut snap = self.snapshot.lock().unwrap();
                 snap.gpu_usable = ev.data["gpu_usable"].as_bool();
-                snap.gpu_verified = Some(true);
+                // ⚠️ 这里原先是 `Some(true)` **无条件** —— 于是「验证超时、结论未知」
+                // （`gpu_usable: null`）也被记成「已验证」，状态栏再按 `!gpu_usable`
+                // 判成「GPU 不可用」。三态布尔在 Rust 这一层被压成了二态。
+                // 正确语义：非 null 才算验过。
+                snap.gpu_verified = Some(!ev.data["gpu_usable"].is_null());
+                snap.blocked_reason = ev.data["blocked_reason"].as_str().map(str::to_string);
+                snap.env_detail = ev.data["detail"].as_str().map(str::to_string);
                 if !ev.data["concurrency"].is_null() {
                     snap.concurrency = Some(ev.data["concurrency"].clone());
                 }
@@ -718,6 +760,29 @@ impl Inner {
         // 全量转发给前端。前端按 name 自行分发。
         if let Err(e) = self.app.emit(EVENT_CHANNEL, &ev) {
             eprintln!("[worker] 事件转发失败（{}）：{e}", ev.name);
+        }
+
+        // 转发之后再重启：让 `config_saved`（含 `warnings`）先到达界面，
+        // 否则用户看到的是「点了保存，界面只在转圈」。
+        // 放独立线程：本函数跑在 stdout 读线程上，重启会换掉这一代的读线程与 child，
+        // 在本线程里做会让「本代 EOF」与「新一代启动」交错（`child_gen` 守卫已能兜住，
+        // 但少一层交错就少一次要靠守卫解释的日志）。
+        if restart_for_config {
+            match self.me.upgrade() {
+                Some(me) => {
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(80));
+                        if me.shutting_down.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        let w = Worker { inner: me };
+                        w.inner
+                            .emit_log("info", "supervisor", "配置已保存，重启 worker 以生效");
+                        w.restart();
+                    });
+                }
+                None => eprintln!("[worker] 监督器已销毁，忽略配置重启"),
+            }
         }
     }
 
@@ -790,7 +855,16 @@ impl Inner {
     /// 仍是崩溃前的 `环境验证：GPU 可用`，看不出已经出事。
     ///
     /// 本函数同时是**崩溃自动重启**的触发点（规格 §7）。
-    fn on_worker_exit(&self) {
+    fn on_worker_exit(&self, gen: u64) {
+        // **代号守卫**：本代读线程结束时，若已经 spawn 了新一代，这次 EOF 是预期内的
+        // （用户重启 / 保存配置后重启）。此时绝不能往下走 —— `child` 里已是新一代的
+        // 进程，`wait()` 会阻塞到它退出，且会把 `alive` 与状态一起搞坏。
+        let current = self.child_gen.load(Ordering::SeqCst);
+        if current != gen {
+            eprintln!("[worker] 第 {gen} 代读线程结束，已被第 {current} 代取代，跳过收尾");
+            return;
+        }
+
         // 这次 swap 的返回值告诉我们「心跳线程是否已经先一步判过死」——
         // 只用来决定要不要再报一条「意外退出」，不影响是否重启：
         // 旧版本在这里直接 `return`，导致「心跳判死 → 进程随后真的退出」这条路径
@@ -1118,6 +1192,26 @@ mod tests {
         let v: Value = serde_json::to_value(&s).unwrap();
         assert_eq!(v["pipeline_state"], json!("running"));
         assert!(v.get("restart_count").is_some());
+    }
+
+    #[test]
+    fn snapshot_carries_blocked_reason_so_ui_can_say_model_missing() {
+        // 2026-10-24 的误报：模型没装（`gpu_usable = null`）被界面说成
+        // 「GPU 不可用」。Rust 这一层原先把 `gpu_verified` 无条件写成 `true`，
+        // 于是三态被压成二态。这条锁住三件事：
+        // 1. `gpu_verified` 必须与 `gpu_usable` 的三态一致（null 时不能是 true）；
+        // 2. `blocked_reason` 必须出现在快照里（前端靠它区分「没验成」与「不能用」）；
+        // 3. `env_detail`（原始说明）也要在，状态栏 tooltip 用。
+        let mut s = StateSnapshot::starting();
+        s.gpu_usable = None;
+        s.gpu_verified = Some(false);
+        s.blocked_reason = Some("model_missing".into());
+        s.env_detail = Some("模型目录不存在：C:\\x\\large-v3".into());
+        let v: Value = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["gpu_usable"], Value::Null);
+        assert_eq!(v["gpu_verified"], json!(false));
+        assert_eq!(v["blocked_reason"], json!("model_missing"));
+        assert!(v["env_detail"].as_str().unwrap().contains("模型目录不存在"));
     }
 
     #[test]

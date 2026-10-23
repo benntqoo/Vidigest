@@ -2,12 +2,17 @@
 //
 // ⚠️ `gpu_verified === null` 表示**尚未验证**，不是「不可用」。
 // 这里必须显示成「检测中…」，与 `PLAN §9.1` 的三态布尔约定一致。
+//
+// 2026-10-24 补第四态：`gpu_usable === null`（验了但没验成）+ `blocked_reason`
+// 指向模型问题 ⇒ 显示「模型未安装」。**不能**显示「GPU 不可用」——那是两个完全
+// 不同的结论，后者会把用户引向驱动排查，而真正要做的是下一个模型。
 
 import type { PipelineState, WorkerState } from "../worker/types";
 
 interface Props {
   worker: WorkerState | null;
   pipeline: PipelineState;
+  onOpenSettings?: () => void;
 }
 
 const PIPELINE_LABELS: Record<PipelineState, string> = {
@@ -18,7 +23,18 @@ const PIPELINE_LABELS: Record<PipelineState, string> = {
   stopped: "已停止",
 };
 
-function gpuView(w: WorkerState | null): { text: string; tone: string; title: string } {
+/** 模型问题的 reason 码（`app/core/env_probe.py` 的 `REASON_*`） */
+const MODEL_REASONS = new Set(["model_missing", "model_incomplete"]);
+
+interface GpuView {
+  text: string;
+  tone: string;
+  title: string;
+  /** 非空表示这个 chip 可以点，点了跳设置 */
+  action?: "settings";
+}
+
+function gpuView(w: WorkerState | null): GpuView {
   if (!w) return { text: "连接中…", tone: "muted", title: "" };
   if (w.state === "failed")
     return { text: "worker 启动失败", tone: "error", title: w.detail };
@@ -37,20 +53,39 @@ function gpuView(w: WorkerState | null): { text: string; tone: string; title: st
       title: "快速探测已通过，正在后台跑一次真实推理做最终确认",
     };
   }
-  if (w.gpu_verified && w.gpu_usable) {
-    return { text: "GPU 可用", tone: "ok", title: "已通过真实推理验证" };
-  }
-  if (!w.gpu_usable) {
+
+  // 第四态：验了，但**没验成**（gpu_usable === null）。原因是环境缺失，
+  // 不是硬件坏了。这里必须按 blocked_reason 分开说。
+  if (w.gpu_usable === null) {
+    const detail = w.env_detail ?? "";
+    if (w.blocked_reason && MODEL_REASONS.has(w.blocked_reason)) {
+      return {
+        text: "模型未安装",
+        tone: "warn",
+        title: `${detail}\n\n点这里打开设置下载模型（约 2.9 GiB）。此时无法转写。`,
+        action: "settings",
+      };
+    }
     return {
-      text: "GPU 不可用",
-      tone: "error",
-      title: "将按 CPU 模式规划并发（吞吐下降约 6 倍），详见日志区",
+      text: "GPU 未能验证",
+      tone: "warn",
+      title: `${detail || "验证未完成"}${w.blocked_reason ? `\n原因码：${w.blocked_reason}` : ""}\n\n点这里打开设置`,
+      action: "settings",
     };
   }
-  return { text: "GPU 状态未知", tone: "muted", title: "" };
+
+  if (w.gpu_usable) {
+    return { text: "GPU 可用", tone: "ok", title: w.env_detail ?? "已通过真实推理验证" };
+  }
+  // 到这里是「验过，确实不能用」
+  return {
+    text: "GPU 不可用",
+    tone: "error",
+    title: `${w.env_detail ?? ""}\n将按 CPU 模式规划并发（吞吐下降约 6 倍），详见日志区`,
+  };
 }
 
-export function StatusBar({ worker, pipeline }: Props) {
+export function StatusBar({ worker, pipeline, onOpenSettings }: Props) {
   const gpu = gpuView(worker);
   const conc = worker?.concurrency;
   const connTone =
@@ -89,9 +124,22 @@ export function StatusBar({ worker, pipeline }: Props) {
         {connText}
       </span>
 
-      <span className={`chip chip-${gpu.tone}`} title={gpu.title}>
-        {gpu.text}
-      </span>
+      {/* 可点的 chip：`<button>` 而不是给 span 加 onClick —— 键盘可达、有焦点框。
+          这里唯一能做的事就是去设置，所以点整个 chip 都是安全的。 */}
+      {gpu.action === "settings" && onOpenSettings ? (
+        <button
+          type="button"
+          className={`chip chip-${gpu.tone} chip-action`}
+          title={gpu.title}
+          onClick={onOpenSettings}
+        >
+          {gpu.text}
+        </button>
+      ) : (
+        <span className={`chip chip-${gpu.tone}`} title={gpu.title}>
+          {gpu.text}
+        </span>
+      )}
 
       {conc && (
         <span className="chip chip-muted" title="实际并发：转写 / 下载 / 抽帧 / 汇总">

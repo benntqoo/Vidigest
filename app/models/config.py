@@ -146,6 +146,12 @@ class CookieConfig:
 class DownloadConfig:
     rate_limit_per_min: int = 10
     keep_intermediate: bool = True
+    #: 模型下载的镜像基址（`{model}` 会被替换）。None 表示用
+    #: `app/core/model_downloader.py` 的 `DEFAULT_BASE_URL`（hf-mirror）。
+    #:
+    #: 为什么要能覆盖：镜像是第三方服务，失效时不该要求用户改代码或等新版本。
+    #: 官方 `huggingface.co` 国内不通，所以默认值不能直接用它。
+    base_url: str | None = None
 
 
 @dataclass

@@ -512,3 +512,254 @@ button.ctxitem.danger {
 button.ctxitem.danger:hover {
   background: #fdf2f2;
 }
+
+/* ---------------------------------------------------------- 设置模态 */
+
+/* 可点的 chip：状态栏里的「模型未安装」。用 button 是为了键盘可达。 */
+button.chip-action {
+  padding: 1px 8px;
+  font-size: 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+button.chip-action:hover:not(:disabled) {
+  filter: brightness(0.97);
+}
+
+.modal-lg {
+  width: min(760px, calc(100vw - 48px));
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  margin: 6px -4px 0;
+  padding: 0 4px;
+}
+
+.settings-section {
+  padding: 10px 0 4px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-section:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.settings-section h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+}
+
+.settings-hint {
+  margin: 6px 0 2px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
+.settings-hint code,
+.model-path,
+.settings-hint code {
+  font-size: 11px;
+  padding: 0 3px;
+  background: var(--surface-2);
+  border-radius: 3px;
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+
+.field-row {
+  display: flex;
+  gap: 10px;
+}
+
+.field-row > .field {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.field-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.field-label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.field-hint {
+  margin-left: 6px;
+  font-style: normal;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+
+.field input[type="text"],
+.field input:not([type]),
+.field input[type="number"],
+.field select {
+  width: 100%;
+  padding: 4px 8px;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
+.field input:disabled,
+.field select:disabled {
+  color: var(--text-dim);
+  background: var(--surface-2);
+}
+
+.field-pair {
+  display: flex;
+  gap: 6px;
+}
+
+.baseline-box {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.banner {
+  margin: 4px 0 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  border-radius: 5px;
+  border: 1px solid;
+}
+
+.banner-warn {
+  color: var(--warn);
+  background: #fff8ec;
+  border-color: #f2d9ac;
+}
+
+.banner-info {
+  color: var(--accent);
+  background: #f0f5ff;
+  border-color: #c7d9fb;
+}
+
+.foot-note {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ---- 模型面板 ---- */
+
+.model-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.model-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.model-key {
+  flex: 0 0 34px;
+  color: var(--text-dim);
+}
+
+.model-path {
+  overflow-wrap: anywhere;
+}
+
+.model-note {
+  margin: 6px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.model-note-ok {
+  color: var(--ok);
+}
+
+.model-note-error {
+  color: var(--error);
+}
+
+.download-box {
+  margin: 8px 0;
+}
+
+.progress {
+  height: 6px;
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
+
+/* 校验阶段不知道进度 —— 用一条走动的条纹，而不是停在 100% 让人以为卡住 */
+.progress-indeterminate {
+  width: 100% !important;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--accent) 0 10px,
+    #9dbcf8 10px 20px
+  );
+  animation: progress-slide 1s linear infinite;
+}
+
+@keyframes progress-slide {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 20px 0;
+  }
+}
+
+.download-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: 12px;
+}

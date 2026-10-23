@@ -10,6 +10,12 @@ use tauri::State;
 use crate::worker::{StateSnapshot, Worker};
 
 /// 规格 §3 定义的**全部**命令。改动此表必须先改规格文档。
+///
+/// 2026-10-24 新增后 5 条（设置界面 + 模型下载）：`get_config` / `set_config` /
+/// `download_model` / `cancel_model_download` / `verify_env`。
+/// 前四条在执行单里写作「4 条命令」，`verify_env` 是实施时补的第 5 条 ——
+/// 设置页的「重新校验」与「改完 model_dir 立刻看结论」都需要它，
+/// 否则用户只能靠重启应用来触发一次验证。
 const ALLOWED_COMMANDS: &[&str] = &[
     "hello",
     "ping",
@@ -23,6 +29,11 @@ const ALLOWED_COMMANDS: &[&str] = &[
     "list_tasks",
     "get_concurrency",
     "shutdown",
+    "get_config",
+    "set_config",
+    "download_model",
+    "cancel_model_download",
+    "verify_env",
 ];
 
 /// 查当前连接状态。前端首次挂载时拉一次，避免错过启动期事件（规格 §4.2 的同一思路）。

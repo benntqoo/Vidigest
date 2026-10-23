@@ -130,3 +130,39 @@ export function listTasks(): Promise<string> {
 export function getConcurrency(): Promise<string> {
   return sendCommand("get_concurrency");
 }
+
+// ------------------------------------------------------------ 设置与模型
+//
+// 五个命令都走 `worker_send` 透传（Rust 侧白名单已扩），**不新增 Tauri 命令** ——
+// 新增一条 Tauri 命令就要同步改 capabilities 与 commands.rs 两处，
+// 而这里没有任何需要宿主代劳的事（不像 `open_local_path` 要绕过 ACL scope）。
+
+/** 拉全量配置 + 模型元信息（响应事件 `config`）。 */
+export function getConfig(): Promise<string> {
+  return sendCommand("get_config");
+}
+
+/**
+ * 部分更新配置（响应事件 `config_saved`）。
+ *
+ * ⚠️ 保存后 **worker 会重启**（Rust 侧在收到 `config_saved` 时触发）——
+ * 因为 `Config` 只在进程启动时读一次，热应用要重建调度器与模型缓存。
+ * 所以界面上「保存成功」与「已生效」是两个时刻，中间有 2-3 秒。
+ */
+export function setConfig(patch: Record<string, unknown>): Promise<string> {
+  return sendCommand("set_config", { patch });
+}
+
+/** 下载模型（约 2.9 GiB）。进度以 `model_download_*` 事件推送。 */
+export function downloadModel(): Promise<string> {
+  return sendCommand("download_model", {});
+}
+
+export function cancelModelDownload(): Promise<string> {
+  return sendCommand("cancel_model_download", {});
+}
+
+/** 手动重跑一次 GPU 真实验证（响应 `env_verify_started` → `env_verified`）。 */
+export function verifyEnv(): Promise<string> {
+  return sendCommand("verify_env");
+}
