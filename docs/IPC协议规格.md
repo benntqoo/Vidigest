@@ -454,6 +454,9 @@ stdout 写入     → 加锁后单线程写入（JSON Lines 天然按行独立�
 | 31 | `work_dir_confirmed` 经 `resolve` 仍保留 | 逐字段重建时不丢字段；丢了的表现是「引导弹了、确认了、下次又弹」 |
 | 32 | 首启默认工作目录避开系统盘 | frozen 模拟下返回绝对路径且盘符 ≠ `%SystemDrive%`（无可用非系统盘则回退 `%LOCALAPPDATA%\Vidigest\work`） |
 | 33 | 声明该盘为系统盘后不再选它 | 证明「跳过系统盘」是在比盘符，不是碰巧 |
+| 34 | 已有**完整**模型 → 探测命中 | `find_existing_model_dir` 返回 `models` 这一层（不是 `models/<model>`） |
+| 35 | 模型不完整 → 探测不命中 | 5 个文件少一个就不算（否则「刚重装就说 GPU 不可用」） |
+| 36 | 无已有模型 → 默认模型目录避开系统盘 | 与 `work_dir` 同一套盘符选择 |
 
 **判据 1 是最有价值的一条**：它用一个断言覆盖了「任何地方不小心 `print` 到 stdout」这一整类
 协议污染事故。新增任何代码后重跑它，成本几秒。
@@ -487,7 +490,7 @@ stdout 写入     → 加锁后单线程写入（JSON Lines 天然按行独立�
 | 日期 | 版本 | 变更 |
 |---|---|---|
 | 2026-10-24 | v1.3 | 设置界面 + 模型下载：① 命令表新增 5 条（`get_config` / `set_config` / `download_model` / `cancel_model_download` / `verify_env`），新增 §3.2 详述白名单、保存即重启（D-S1）、三态布尔与 `blocked_reason`、下载事件流与续传；② `env_verified` 增 `gpu_verified` 与 `blocked_reason`；③ **语义更正**：`gpu_usable=false` 只表示「验过，确实不能用」，`null` 且 `blocked_reason` 非空表示「因环境缺失没能验」——2026-10-24 安装版首启的「GPU 不可用」误报正是这两者被混为一谈；④ §9 判据 19 → **28** 条 |
-| 2026-10-25 | v1.4 | `get_config` 增 `languages`（转写语言下拉的选项由后端下发，`config.py::LANGUAGE_LABELS` 为唯一真源）；`transcribe.language` **空串 = 自动检测**（faster-whisper 只认 `None`，归一化在 `transcriber.transcribe()` 一处）；`paths` 新增 `work_dir_confirmed`（首启引导的显式确认位）。§9 判据 28 → **33** 条 |
+| 2026-10-25 | v1.4 | `get_config` 增 `languages`（转写语言下拉的选项由后端下发，`config.py::LANGUAGE_LABELS` 为唯一真源）；`transcribe.language` **空串 = 自动检测**（faster-whisper 只认 `None`，归一化在 `transcriber.transcribe()` 一处）；`paths` 新增 `work_dir_confirmed`（首启引导的显式确认位）。§9 判据 28 → **36** 条 |
 | 2026-10-02 | v1 | 首版。确立 stdio + JSON Lines、命令/事件清单、状态语义、心跳、进程回收与验收判据 |
 | 2026-10-06 | v1.2 | 语义更正（卡死缺陷修复的配套）：① `pipeline_state` 按 §4 本义「状态跃迁」补齐**终态推送**（→idle 于批次收敛、→aborted 于整批中止），此前实现只在 start/pause/resume 时推送，UI 开始按钮会永久灰死；② 空队列 `start` 落 idle 而非 running（与 `resume()` 的条件式语义对齐）；③ 中止后单次 `start` 可恢复（`_cmd_start` 改为先 start 后 submit，`_put` 感知 ABORTED，队列条目倒回 pending）。§9 判据 11/12/13 同步更正 |
 | 2026-10-03 | v1.1 | ① 新增 `cancelled` 状态与 §3.1 取消语义（协作式取消、检查点位置、两条硬要求）；② 事件清单补齐调度器事件：`pipeline_state` / `resource_warning` / `batch_aborted` / `batch_done`，`task_update` 之外的控制面事件改名映射（`dispatcher` 只报事实，名字翻译在 `rpc.py` 的 `EVENT_NAMES`）；③ `ready` 增 `pipeline_state`；④ §4.1 补限流落地常量与「限流在调度器做，不在 rpc 做」的理由；⑤ §9 判据从 8 条扩到 19 条（含新修好的 EOF 判据），并标注两条**尚未覆盖**的项（转写进行中的心跳、控制面事件在真实批次下的时序）；⑥ `E_NOT_IMPLEMENTED` 已无命令返回 |

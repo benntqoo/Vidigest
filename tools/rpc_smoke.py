@@ -604,6 +604,66 @@ def check_work_dir_defaults(tmp: str, judgements: list[tuple[str, bool, str]]) -
         paths_mod.is_frozen = original  # type: ignore[assignment]
 
 
+def check_model_dir_defaults(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
+    """首启模型目录探测：**完整**才算数（少一个文件就当成没装）。
+
+    这一条直接对应「卸载删数据目录」带来的副作用：config.yaml 没了 ⇒ `model_dir`
+    回到默认值。如果探测把「下了一半」的目录认成可用，症状会是「刚重装就说
+    GPU 不可用」，而用户完全无从判断 —— 所以判据必须是 5 个文件全在。
+    """
+    from app.core import env_probe, paths as paths_mod
+
+    base = Path(tmp) / "Vidigest"
+    models = base / "models"
+    full = models / "large-v3"
+    full.mkdir(parents=True, exist_ok=True)
+    for name in env_probe.MODEL_FILES:
+        (full / name).write_bytes(b"x" * 8)
+
+    found = paths_mod.find_existing_model_dir("large-v3", roots=[base])
+    judgements.append(
+        (
+            "已有完整模型 → 探测命中",
+            found == models,
+            f"返回={found}",
+        )
+    )
+
+    partial_base = Path(tmp) / "partial"
+    partial = partial_base / "models" / "large-v3"
+    partial.mkdir(parents=True, exist_ok=True)
+    (partial / "config.json").write_bytes(b"x")
+    found2 = paths_mod.find_existing_model_dir("large-v3", roots=[partial_base])
+    judgements.append(
+        (
+            "模型不完整 → 探测不命中（不能把下了一半当成能用）",
+            found2 is None,
+            f"返回={found2}",
+        )
+    )
+
+    # frozen 模拟：无已有模型时，默认模型目录跟工作目录一样去非系统盘。
+    original = paths_mod.is_frozen
+    paths_mod.is_frozen = lambda: True  # type: ignore[assignment]
+    try:
+        picked = paths_mod.pick_default_model_dir("large-v3", roots=[Path(tmp) / "empty"])
+        system = (os.environ.get("SystemDrive") or "C:").rstrip("\\/").upper()
+        has_other = any(
+            Path(f"{c}:\\").exists() and f"{c}:" != system
+            for c in "DEFGHIJKLMNOPQRSTUVWXYZ"
+        )
+        ok = picked.is_absolute() and (picked.drive.upper() != system if has_other else True)
+        judgements.append(
+            (
+                "无已有模型 → 默认模型目录避开系统盘",
+                ok,
+                f"选了 {picked}（系统盘 {system}）",
+            )
+        )
+    finally:
+        paths_mod.is_frozen = original  # type: ignore[assignment]
+
+
 def main() -> int:
     print("IPC 协议冒烟测试 —— docs/IPC协议规格.md §9\n")
 
@@ -615,6 +675,7 @@ def main() -> int:
     check_verify_cuda_tristate(tmp, host.judgements)
     check_language_table(host.judgements)
     check_work_dir_defaults(tmp, host.judgements)
+    check_model_dir_defaults(tmp, host.judgements)
 
     run_eof_flow(env, host.judgements)
 
