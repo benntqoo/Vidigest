@@ -38,7 +38,13 @@ from app.core import paths
 from app.core.dispatcher import Dispatcher
 from app.core.store import Store
 from app.core.urls import extract_many
-from app.models.config import DEFAULT_CONFIG_NAME, Config, ConfigError
+from app.models.config import (
+    DEFAULT_CONFIG_NAME,
+    LANGUAGE_AUTO,
+    LANGUAGE_LABELS,
+    Config,
+    ConfigError,
+)
 from app.models.task import Task, TaskStatus
 
 PROTOCOL_VERSION = 1
@@ -771,10 +777,18 @@ class Worker:
             except OSError as exc:  # noqa: PERF203 — 单个文件读不到不该让整页失败
                 logging.warning("统计模型目录大小失败：%s", exc)
         api_key_env = cfg.summarize.api_key_env
+        # 语言下拉的选项由**后端下发**：`LANGUAGE_LABELS` 是唯一真源，
+        # 前端不另存一份（两份表必然漂移，而且漂移后没人会发现）。
+        languages = [{"code": LANGUAGE_AUTO, "label": "自动检测"}]
+        languages += [
+            {"code": code, "label": f"{label}（{code}）"}
+            for code, label in LANGUAGE_LABELS.items()
+        ]
         return {
             "path": str(self.config_path),
             "is_default": self.config_is_default,
             "config": cfg.to_dict(),
+            "languages": languages,
             "model_path": str(model_path),
             "model_present": not missing,
             "model_missing_files": missing,

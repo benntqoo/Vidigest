@@ -18,6 +18,7 @@ import { LogPanel, type LogEntry } from "./components/LogPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { StatusBar } from "./components/StatusBar";
 import { TaskTable } from "./components/TaskTable";
+import { WorkDirGuide } from "./components/WorkDirGuide";
 import * as api from "./worker/client";
 import type { CloseRequest } from "./worker/client";
 import type {
@@ -66,6 +67,8 @@ function App() {
   const [applyingSince, setApplyingSince] = useState<number | null>(null);
   /** 手动重验中（`verify_env` 已发、`env_verified` 未到） */
   const [verifying, setVerifying] = useState(false);
+  /** 首启工作目录引导是否已被「稍后再说」收起（只在本进程内有效，重启再问） */
+  const [guideDismissed, setGuideDismissed] = useState(false);
 
   const pushLog = useCallback(
     (level: LogEntry["level"], msg: string, source?: string) => {
@@ -476,6 +479,31 @@ function App() {
       />
 
       <LogPanel entries={logs} onClear={() => setLogs([])} />
+
+      {/*
+        首启工作目录引导。触发条件是显式的确认位，而不是「路径等于默认值」——
+        后者会让「我就是要用 LOCALAPPDATA」的用户每次启动都被弹。
+        与设置模态互斥：先让用户处理引导，避免两个覆盖层叠在一起。
+      */}
+      {!settingsOpen &&
+        !guideDismissed &&
+        configInfo?.config.paths.work_dir_confirmed === false && (
+          <WorkDirGuide
+            suggested={configInfo.config.paths.work_dir}
+            busy={applyingSince !== null}
+            onConfirm={(workDir) => {
+              setGuideDismissed(true);
+              setVerifying(false);
+              run(
+                "确认工作目录",
+                api.setConfig({
+                  paths: { work_dir: workDir, work_dir_confirmed: true },
+                }),
+              );
+            }}
+            onLater={() => setGuideDismissed(true)}
+          />
+        )}
 
       {settingsOpen && (
         <SettingsDialog

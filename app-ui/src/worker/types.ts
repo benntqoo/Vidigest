@@ -172,6 +172,8 @@ export function formatProgress(p: number): string | null {
 export interface AppConfig {
   paths: {
     work_dir: string;
+    /** false = 首启自动生成、用户还没确认过 ⇒ 弹一次工作目录引导 */
+    work_dir_confirmed: boolean;
     model_dir: string;
     ffmpeg: string | null;
     yt_dlp: string | null;
@@ -219,6 +221,12 @@ export interface ConfigInfo {
   path: string;
   is_default: boolean;
   config: AppConfig;
+  /**
+   * 转写语言下拉的选项。**由后端下发**（`config.py::LANGUAGE_LABELS` 是唯一真源）——
+   * 前端不硬编码第二份表，否则两份必然漂移且漂移后不会有人发现。
+   * 首项 `code === ""` 表示「自动检测」。
+   */
+  languages: { code: string; label: string }[];
   model_path: string;
   model_present: boolean;
   model_missing_files: string[];

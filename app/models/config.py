@@ -23,6 +23,130 @@ EXAMPLE_CONFIG_NAME = "config.example.yaml"
 VALID_DEVICES = ("auto", "cuda", "cpu")
 VALID_COMPUTE_TYPES = ("auto", "float16", "float32", "int8", "int8_float16")
 
+#: `transcribe.language` 的**空串**含义：交给 faster-whisper 自动检测。
+#:
+#: 为什么不用 `"auto"` 这个字面量：faster-whisper 只认 `None`（`language=None`
+#: 才走 detect_language）。传 `"auto"` 或 `""` 会在 `transcribe()` 里被当成语言码
+#: 去查表，直接抛 `ValueError: Language 'auto' is not supported`。
+#: 配置层用空串（YAML 里好写、好判断），**归一成 `None` 只发生在
+#: `app/core/transcriber.py` 一个地方**。
+LANGUAGE_AUTO = ""
+
+#: 语言码 → 中文名。**这张表就是唯一真源**：`SUPPORTED_LANGUAGES` 由它派生，
+#: 设置界面的下拉项由 `get_config` 下发（前端不另存一份）。
+#:
+#: 为什么硬编码而不 `from faster_whisper.tokenizer import _LANGUAGE_CODES`：
+#: `config.py` 被 `paths.py` / `cli.py` 这类极早期模块导入，在这里 import
+#: faster_whisper 会把 CTranslate2 原生库拖进启动路径（而"非主线程首次原生
+#: import 静默卡死"是本项目踩过的坑）。一致性由
+#: `tools/rpc_smoke.py::check_language_table()` 对着已安装的包核对，
+#: **漂移会被判据抓住，不靠注释保证**。
+LANGUAGE_LABELS: dict[str, str] = {
+    "af": "南非荷兰语",
+    "am": "阿姆哈拉语",
+    "ar": "阿拉伯语",
+    "as": "阿萨姆语",
+    "az": "阿塞拜疆语",
+    "ba": "巴什基尔语",
+    "be": "白俄罗斯语",
+    "bg": "保加利亚语",
+    "bn": "孟加拉语",
+    "bo": "藏语",
+    "br": "布列塔尼语",
+    "bs": "波斯尼亚语",
+    "ca": "加泰罗尼亚语",
+    "cs": "捷克语",
+    "cy": "威尔士语",
+    "da": "丹麦语",
+    "de": "德语",
+    "el": "希腊语",
+    "en": "英语",
+    "es": "西班牙语",
+    "et": "爱沙尼亚语",
+    "eu": "巴斯克语",
+    "fa": "波斯语",
+    "fi": "芬兰语",
+    "fo": "法罗语",
+    "fr": "法语",
+    "gl": "加利西亚语",
+    "gu": "古吉拉特语",
+    "ha": "豪萨语",
+    "haw": "夏威夷语",
+    "he": "希伯来语",
+    "hi": "印地语",
+    "hr": "克罗地亚语",
+    "ht": "海地克里奥尔语",
+    "hu": "匈牙利语",
+    "hy": "亚美尼亚语",
+    "id": "印尼语",
+    "is": "冰岛语",
+    "it": "意大利语",
+    "ja": "日语",
+    "jw": "爪哇语",
+    "ka": "格鲁吉亚语",
+    "kk": "哈萨克语",
+    "km": "高棉语",
+    "kn": "卡纳达语",
+    "ko": "韩语",
+    "la": "拉丁语",
+    "lb": "卢森堡语",
+    "ln": "林加拉语",
+    "lo": "老挝语",
+    "lt": "立陶宛语",
+    "lv": "拉脱维亚语",
+    "mg": "马达加斯加语",
+    "mi": "毛利语",
+    "mk": "马其顿语",
+    "ml": "马拉雅拉姆语",
+    "mn": "蒙古语",
+    "mr": "马拉地语",
+    "ms": "马来语",
+    "mt": "马耳他语",
+    "my": "缅甸语",
+    "ne": "尼泊尔语",
+    "nl": "荷兰语",
+    "nn": "新挪威语",
+    "no": "挪威语",
+    "oc": "奥克语",
+    "pa": "旁遮普语",
+    "pl": "波兰语",
+    "ps": "普什图语",
+    "pt": "葡萄牙语",
+    "ro": "罗马尼亚语",
+    "ru": "俄语",
+    "sa": "梵语",
+    "sd": "信德语",
+    "si": "僧伽罗语",
+    "sk": "斯洛伐克语",
+    "sl": "斯洛文尼亚语",
+    "sn": "修纳语",
+    "so": "索马里语",
+    "sq": "阿尔巴尼亚语",
+    "sr": "塞尔维亚语",
+    "su": "巽他语",
+    "sv": "瑞典语",
+    "sw": "斯瓦希里语",
+    "ta": "泰米尔语",
+    "te": "泰卢固语",
+    "tg": "塔吉克语",
+    "th": "泰语",
+    "tk": "土库曼语",
+    "tl": "他加禄语",
+    "tr": "土耳其语",
+    "tt": "鞑靼语",
+    "uk": "乌克兰语",
+    "ur": "乌尔都语",
+    "uz": "乌兹别克语",
+    "vi": "越南语",
+    "yi": "意第绪语",
+    "yo": "约鲁巴语",
+    "zh": "中文",
+    "yue": "粤语",
+}
+
+SUPPORTED_LANGUAGES: tuple[str, ...] = tuple(LANGUAGE_LABELS)
+
+
 
 class ConfigError(Exception):
     """配置文件缺失或字段非法。"""
@@ -46,6 +170,16 @@ class PathsConfig:
 
     work_dir: str = "work"
     model_dir: str = "models"
+    #: 用户是否**明确确认过**工作目录。
+    #:
+    #: 语义与默认值都很讲究：
+    #: - 默认 `True` ⇒ 老配置（yaml 里没有这个键）不会被弹引导，升级用户不被打扰；
+    #: - 只有**首启自动生成**的配置才被置为 `False`（见 `paths.ensure_default_config`），
+    #:   于是界面弹一次性引导，把「自动挑的 D:\Vidigest\work」摆给用户确认或改。
+    #:
+    #: 为什么不靠「路径是不是默认值」判断：用户可能就是想用 `%LOCALAPPDATA%\work`，
+    #: 那样每次启动都会弹 —— 用一个显式的确认位才不会有这种死循环。
+    work_dir_confirmed: bool = True
     # None 表示按 ffmpeg_locator 的四级顺序自动定位（PLAN.md §9.4）
     ffmpeg: str | None = None
     # None 表示按 yt_dlp_locator 的顺序自动定位（config → PATH）
@@ -62,6 +196,10 @@ class PathsConfig:
         return PathsConfig(
             work_dir=str(work if work.is_absolute() else root / work),
             model_dir=str(model if model.is_absolute() else root / model),
+            # ⚠️ 这个字段**必须**一起带过来：`resolve()` 是逐字段重建，
+            # 漏一个就会在每次 `Config.from_dict` 时被静默重置成默认值，
+            # 表现是「首启引导弹了、用户点确认、下次启动又弹」。
+            work_dir_confirmed=self.work_dir_confirmed,
             ffmpeg=self.ffmpeg,
             yt_dlp=self.yt_dlp,
             cookies_file=(
@@ -258,6 +396,15 @@ class Config:
         if self.runtime.device not in VALID_DEVICES:
             raise ConfigError(
                 f"runtime.device 非法：{self.runtime.device!r}，可选 {VALID_DEVICES}"
+            )
+        lang = self.transcribe.language
+        if lang != LANGUAGE_AUTO and lang not in SUPPORTED_LANGUAGES:
+            # 早失败：否则错误要等到真跑转写、模型加载完才以
+            # `ValueError: Language 'xx' is not supported` 的形式出现，
+            # 那时用户已经在等结果了。
+            raise ConfigError(
+                f"transcribe.language 非法：{lang!r}，留空表示自动检测，"
+                f"或取 {len(SUPPORTED_LANGUAGES)} 个语言码之一（如 zh / en / ja）"
             )
         if self.runtime.compute_type not in VALID_COMPUTE_TYPES:
             raise ConfigError(

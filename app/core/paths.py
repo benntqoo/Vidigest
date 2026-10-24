@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -69,6 +70,46 @@ def app_root() -> Path:
     return app_data_dir()
 
 
+def pick_default_work_dir(system_drive: str | None = None) -> Path:
+    """首启时挑一个放工作文件的地方：优先**非系统盘**，取剩余空间最大的那块。
+
+    为什么不放安装目录（`%ProgramFiles%\\Vidigest\\work`）：
+    MSI 是 `perMachine`，Program Files 对普通用户**只读**，往那里写 mp4/wav
+    会直接失败（或触发 UAC 虚拟化把文件悄悄重定向到别处）；而且卸载/升级会清
+    安装目录 —— 几十 GB 产出会跟着一起没。`program_dir()` 的说明里已经写明
+    「这里只读，不要写数据」。
+
+    为什么不固定 `%LOCALAPPDATA%\\Vidigest\\work`：`work/` 里是 mp4 / wav / jpg，
+    动辄几十 GB，默认落系统盘会把 C 盘吃满（PLAN.md §2 的第一约束就是这件事）。
+
+    返回值是**建议值**，最终以用户确认结果为准（`paths.work_dir_confirmed`）。
+
+    `system_drive` 只用于测试注入（例如 `"D:"` 模拟「D 是系统盘」）。
+    """
+    if not is_frozen():
+        # 源码运行沿用现状：相对 root，阶段 1/2 的判据不受影响。
+        return Path("work")
+
+    system = (system_drive or os.environ.get("SystemDrive") or "C:").rstrip("\\/").upper()
+    candidates: list[tuple[int, Path]] = []
+    for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
+        drive = f"{letter}:"
+        root = Path(drive + "\\")
+        if drive == system or not root.exists():
+            continue
+        try:
+            free = shutil.disk_usage(str(root)).free
+        except OSError:  # noqa: PERF203 — 光驱 / 断开的网络盘
+            continue
+        if free > 0:
+            candidates.append((free, root / APP_DIR_NAME / "work"))
+    if candidates:
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+    # 只有 C 盘可用：回退到数据目录（用户仍可在首启引导里改）。
+    return app_data_dir() / "work"
+
+
 def default_config_path() -> Path:
     """`config.yaml` 的默认位置。"""
     return app_root() / DEFAULT_CONFIG_NAME
@@ -87,6 +128,11 @@ def ensure_default_config(path: Path | None = None) -> tuple[Path, bool]:
     if p.is_file():
         return p, False
     cfg = Config.from_dict({}, root=p.parent)
+    if is_frozen():
+        # 首启：把工作目录预置到非系统盘，并标记「用户还没确认过」，
+        # 让界面弹一次性引导。见 `pick_default_work_dir()` 的理由。
+        cfg.paths.work_dir = str(pick_default_work_dir())
+        cfg.paths.work_dir_confirmed = False
     cfg.save(p)
     return p, True
 

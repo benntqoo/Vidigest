@@ -492,6 +492,118 @@ def check_verify_cuda_tristate(tmp: str, judgements: list[tuple[str, bool, str]]
     )
 
 
+def check_language_table(judgements: list[tuple[str, bool, str]]) -> None:
+    """语言码表与 faster-whisper 实际支持的表必须逐项一致。
+
+    `LANGUAGE_LABELS` 是**硬编码**的（理由见 `app/models/config.py`：不能在
+    config.py 里 import faster_whisper，会把原生库拖进启动路径）。硬编码就意味着
+    会漂移 —— 所以这里拿已安装的包当场对表。少一个语言、多一个语言都算失败。
+    """
+    from app.models.config import (
+        LANGUAGE_AUTO,
+        LANGUAGE_LABELS,
+        SUPPORTED_LANGUAGES,
+        Config,
+        ConfigError,
+    )
+
+    try:
+        from faster_whisper.tokenizer import _LANGUAGE_CODES as upstream
+    except Exception as exc:  # noqa: BLE001 — 缺包时报清楚，不要静默跳过
+        judgements.append(("语言表与 faster-whisper 一致", False, f"无法导入：{exc}"))
+    else:
+        mine = list(SUPPORTED_LANGUAGES)
+        diff = (
+            f"缺={sorted(set(upstream) - set(mine))} 多={sorted(set(mine) - set(upstream))}"
+            if set(upstream) != set(mine)
+            else ("顺序不同" if list(upstream) != mine else "")
+        )
+        judgements.append(
+            (
+                "语言表与 faster-whisper 一致（数量 + 内容 + 顺序）",
+                not diff and len(mine) == len(upstream),
+                diff or f"{len(mine)} 项，标签齐全={len(LANGUAGE_LABELS) == len(mine)}",
+            )
+        )
+
+    # 空串 = 自动检测，必须能过校验；随手编的码必须被挡在写盘前。
+    auto_ok = False
+    bogus_ok = False
+    try:
+        cfg = Config.from_dict({"transcribe": {"language": LANGUAGE_AUTO}})
+        cfg.validate()
+        auto_ok = True
+    except ConfigError:
+        auto_ok = False
+    try:
+        Config.from_dict({"transcribe": {"language": "klingon"}}).validate()
+    except ConfigError:
+        bogus_ok = True
+    judgements.append(
+        (
+            "language 校验：空串=自动检测放行、乱码拒绝",
+            auto_ok and bogus_ok,
+            f"空串通过={auto_ok} 乱码被拒={bogus_ok}",
+        )
+    )
+
+
+def check_work_dir_defaults(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
+    """首启工作目录：默认必须避开系统盘，且「已确认」标记不能在解析时被重置。
+
+    第 2 条防的是一个**静默**缺陷：`PathsConfig.resolve()` 是逐字段重建，
+    漏一个字段就会在每次 `Config.from_dict` 时把它重置成默认值。表现是
+    「引导弹了、用户点了确认、下次启动又弹」—— 用户会以为设置没保存。
+    """
+    from app.core import paths as paths_mod
+    from app.models.config import Config
+
+    # ---- 1. 解析不丢字段 ----
+    cfg = Config.from_dict({"paths": {"work_dir_confirmed": False}}, root=Path(tmp))
+    judgements.append(
+        (
+            "work_dir_confirmed 经 resolve 后仍保留",
+            cfg.paths.work_dir_confirmed is False,
+            f"读回={cfg.paths.work_dir_confirmed}",
+        )
+    )
+
+    # ---- 2. 默认目录避开系统盘 ----
+    # `pick_default_work_dir()` 在非 frozen 下刻意返回相对路径（源码运行行为不变），
+    # 所以要临时把它当成打包运行来测。用完立刻还回去，否则后面所有
+    # `app_data_dir()` 都跟着变，污染本脚本其余判据。
+    original = paths_mod.is_frozen
+    paths_mod.is_frozen = lambda: True  # type: ignore[assignment]
+    try:
+        picked = paths_mod.pick_default_work_dir()
+        system = (os.environ.get("SystemDrive") or "C:").rstrip("\\/").upper()
+        others = [
+            f"{c}:"
+            for c in "DEFGHIJKLMNOPQRSTUVWXYZ"
+            if Path(f"{c}:\\").exists() and f"{c}:" != system
+        ]
+        if others:
+            ok = picked.is_absolute() and picked.drive.upper() != system
+            note = f"选了 {picked}（系统盘 {system}，可用非系统盘 {others[:3]}）"
+        else:
+            ok = picked == paths_mod.app_data_dir() / "work"
+            note = f"无可用非系统盘，回退 {picked}"
+        judgements.append(("首启默认工作目录避开系统盘", ok, note))
+
+        # 把已选中的那块盘当作系统盘，必须换一块或回退 —— 证明「跳过系统盘」
+        # 不是碰巧，而是真在比较盘符。
+        alt = paths_mod.pick_default_work_dir(system_drive=picked.drive or "C:")
+        judgements.append(
+            (
+                "声明该盘为系统盘后不再选它",
+                alt != picked,
+                f"重新选择 → {alt}",
+            )
+        )
+    finally:
+        paths_mod.is_frozen = original  # type: ignore[assignment]
+
+
 def main() -> int:
     print("IPC 协议冒烟测试 —— docs/IPC协议规格.md §9\n")
 
@@ -501,6 +613,8 @@ def main() -> int:
     check_protocol_purity(host)
     check_seq_monotonic(host)
     check_verify_cuda_tristate(tmp, host.judgements)
+    check_language_table(host.judgements)
+    check_work_dir_defaults(tmp, host.judgements)
 
     run_eof_flow(env, host.judgements)
 

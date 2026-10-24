@@ -194,7 +194,7 @@ def run(
     model_path: str | Path,
     out_prefix: str | Path,
     *,
-    language: str = "zh",
+    language: str | None = "zh",
     beam_size: int = DEFAULT_BEAM_SIZE,
     vad_filter: bool = True,
     vad_min_silence_ms: int = DEFAULT_VAD_MIN_SILENCE_MS,
@@ -212,10 +212,17 @@ def run(
     `cancel_event` 的检查点只能放在 **segment 边界**：CTranslate2 的推理是
     进程内 C++ 调用，没有中断接口。因此取消延迟 = 一个 segment 的时间
     （实测 0.5~3 秒），而不是瞬时。这一点在 `IPC协议规格.md` §3 已如实写明。
+
+    `language` **空串或 None = 自动检测**。faster-whisper 只认 `None`：
+    传 `""` 会被当成语言码查表并抛 `ValueError: Language '' is not supported`，
+    所以归一化必须在这里做，不能靠调用方自觉。
     """
     src = Path(wav)
     if not src.is_file():
         raise StageError("transcribe", f"音频文件不存在：{src}")
+
+    # 空串 / 纯空白 → None（自动检测）。见 docstring。
+    lang: str | None = (language or "").strip() or None
 
     model = load_model(model_path, device=device, compute_type=compute_type)
     audio = load_wav_16k_mono(src)
@@ -227,7 +234,7 @@ def run(
     try:
         segments_iter, info = model.transcribe(
             audio,
-            language=language,
+            language=lang,
             beam_size=beam_size,
             vad_filter=vad_filter,
             vad_parameters={"min_silence_duration_ms": vad_min_silence_ms},
@@ -260,7 +267,10 @@ def run(
 
     out = Path(out_prefix)
     out.parent.mkdir(parents=True, exist_ok=True)
-    txt_path, srt_path, json_path = _write_outputs(out, rows, model_ref, info, language)
+    # 产物里记**实际识别出的语言**：自动检测时 `info.language` 才是真值，
+    # 配置里的空串不能写进产出（否则 srt/json 的 language 字段是空的，下游没法用）。
+    lang_out = info.language or lang or ""
+    txt_path, srt_path, json_path = _write_outputs(out, rows, model_ref, info, lang_out)
 
     _report(on_progress, "transcribing", 1.0)
     logging.info("转写完成：%d 段，%.1f 秒音频 → %s", len(rows), total, txt_path.name)
@@ -271,7 +281,7 @@ def run(
         json=json_path,
         segments=len(rows),
         duration_sec=total,
-        language=info.language or language,
+        language=lang_out,
         model=model_ref,
     )
 

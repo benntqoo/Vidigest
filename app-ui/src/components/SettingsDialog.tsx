@@ -340,12 +340,23 @@ export function SettingsDialog({
             <h3>转写</h3>
             <div className="field-row">
               <label className="field">
-                <span className="field-label">语言</span>
-                <input
+                <span className="field-label">
+                  转写语言
+                  <em className="field-hint">视频里说的话，不是你想要的输出语言</em>
+                </span>
+                {/* 选项来自 `info.languages`（后端下发），不在这里硬编码 ——
+                    否则 Python 侧的 100 个语言码与前端两份表必然漂移。 */}
+                <select
                   value={draft.transcribe.language}
                   disabled={readOnly}
                   onChange={(e) => setTranscribe("language", e.target.value)}
-                />
+                >
+                  {(info.languages ?? [{ code: "", label: "自动检测" }]).map((l) => (
+                    <option key={l.code || "auto"} value={l.code}>
+                      {l.label}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label className="field field-inline">
                 <input
