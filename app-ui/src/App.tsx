@@ -492,7 +492,9 @@ function App() {
             suggested={configInfo.config.paths.work_dir}
             busy={applyingSince !== null}
             onConfirm={(workDir) => {
-              setGuideDismissed(true);
+              // **不在这里关掉引导**：保存可能失败（目录不可写 / 非法路径），
+              // 乐观关闭会让用户以为设置好了。真正的关闭条件是 `config_saved`
+              // 把 `work_dir_confirmed` 变成 true —— 那说明确实落盘了。
               setVerifying(false);
               run(
                 "确认工作目录",

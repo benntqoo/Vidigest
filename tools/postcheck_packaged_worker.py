@@ -126,6 +126,15 @@ def main() -> int:
         record("get_config 带 model_present / read_only_fields", has_fields,
                f"model_present={ev.get('model_present')} ro={len(ev.get('read_only_fields') or [])}")
 
+        # 1b. 语言下拉的选项必须由**产物**下发（前端没有第二份表）
+        langs = ev.get("languages") or []
+        auto_first = bool(langs) and langs[0].get("code") == ""
+        record(
+            "get_config 下发 languages（含自动检测）",
+            len(langs) >= 100 and auto_first,
+            f"{len(langs)} 项，首项={langs[0] if langs else None}",
+        )
+
         # 2. set_config 拒绝 api_key
         # 注意：实现的口径是「丢弃 + 警告」，**不是整体失败**（`app/rpc.py:603-606`）。
         c.send("set_config", {"patch": {"summarize": {"api_key": "sk-should-not-be-written", "enabled": True}}})

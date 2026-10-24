@@ -5,6 +5,11 @@
     },
     "targets": [
       "msi"
-    ]
+    ],
+    "windows": {
+      "wix": {
+        "template": "wix/main.wxs"
+      }
+    }
   }
 }
