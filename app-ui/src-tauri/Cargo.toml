@@ -3,6 +3,7 @@ name = "vidigest"
 version = "0.6.3"
 description = "Vidigest 桌面端宿主（Tauri 2）"
 authors = ["Ben"]
+license = "MIT"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

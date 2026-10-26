@@ -1,152 +1,126 @@
-# Vidigest
+<p align="center">
+  <img src="docs/images/readme/banner.png" alt="Vidigest" width="100%">
+</p>
 
-> Video → Digest。批量把在线视频（抖音 / B站 / YouTube）转成本地结构化文稿。
->
-> 下载 → 抽音频 → **GPU 转写** → 抽帧拼版 → （可选）汇总
+<h1 align="center">Vidigest</h1>
 
-> **改名说明（2026-10-14）**：应用名由 `Vidnote` 改为 **`Vidigest`** ——
-> `VidNote` / `ViNote` / `VideoNote` 三个名字在同类开源项目里都已被占，无法区分。
-> **本地仓库目录 `Vidnote/` 与 GitHub 仓库名均未改**（只改应用名），落点与迁移见 `docs/改名执行单.md`。
+<p align="center">
+  <b>批量把在线视频转成留在自己硬盘上的结构化文稿</b><br>
+  下载 &nbsp;·&nbsp; GPU 转写 &nbsp;·&nbsp; 抽帧拼版 &nbsp;·&nbsp; AI 汇总
+</p>
 
-## 状态
+<p align="center">
+  <img alt="platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4?logo=windows11&logoColor=white">
+  <img alt="python" src="https://img.shields.io/badge/python-3.13-3776AB?logo=python&logoColor=white">
+  <img alt="tauri" src="https://img.shields.io/badge/tauri-2-24C8DB?logo=tauri&logoColor=white">
+  <img alt="cuda" src="https://img.shields.io/badge/CUDA-12-76B900?logo=nvidia&logoColor=white">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-3DA639">
+  <img alt="status" src="https://img.shields.io/badge/status-0.6.3%20beta-2F6FED">
+</p>
 
-| 阶段 | 内容 | 状态 |
-|---|---|---|
-| — | 链路验证 + 环境实测 | ✅ 完成（见 `docs/实测记录.md`） |
-| — | 开发计划书 | ✅ 完成（见 `PLAN.md`） |
-| — | **产品需求文档（PRD）** | ✅ 完成（见 `docs/PRD.md`） |
-| 1 | 核心流水线（CLI，无 GUI） | ✅ 完成（验收通过） |
-| 2 | 并发调度 + 断点续跑 | ✅ 完成（验收 23/23 通过） |
-| 3 | GUI（Rust + Tauri，Python sidecar） | 🟡 闭环已通；剩**托盘 + 后台继续**与**沙箱外渲染复验** |
-| 4 | cookie 自动化 + 汇总模块 | ⬜ **未开始**（配置项已留，无实现） |
-| 5 | 打包（PyInstaller + Tauri，两层） | 🟡 主体完成（`./dev.sh release` exit 0 → MSI 1.45 GiB）；待**干净机器**验证 |
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#产出长什么样">产出</a> ·
+  <a href="#工作原理">工作原理</a> ·
+  <a href="#性能与硬件">性能</a> ·
+  <a href="#常见问题">FAQ</a> ·
+  <a href="#参与贡献">贡献</a> ·
+  <a href="docs/PRD.md">产品文档</a>
+</p>
 
-> **当前进度与下一步看 `handoff.md`**；**产品最终目标与验收标准看 `docs/PRD.md`**。
-> 阶段 5 排在最后但**提前做了** —— 它是 `PLAN.md` §11 里风险最高的一条（CUDA DLL 随包分发
-> × 两层构建链），早做早暴露，结果确实暴露了 NSIS 不可用与 `externalBin` 不支持单目录两个硬约束。
+---
 
-**阶段 1 完成**：全链路跑通（下载 → 抽音频 → GPU 转写 → 落库，实测 2 分 36 秒 / 20 分钟视频），
-产出与基线 `samples/transcript_gpu.txt` **逐字节一致**（662 段），复现性经两次独立运行验证。
+**English** — Vidigest is a Windows desktop tool that turns a queue of online videos
+(Douyin / Bilibili / YouTube / X) into local, structured documents: it downloads, transcribes
+on your own GPU, cuts scenes into contact sheets, and writes a Markdown summary using either a
+local 2B vision-language model or your own cloud API key. No upload, no per-minute billing,
+everything stays on your disk. A 20-minute video is transcribed in **2m18s** on a mid-range
+NVIDIA card, byte-for-byte reproducibly.
+→ **[English README](README.en.md)**
 
-**阶段 2 完成**：`dispatcher.py` 三级流水线（下载池 → 转写池 ×1 → 抽帧池）+ 有界队列背压 +
-内存护栏 + 断点续跑。验收手段 `tools/phase2_acceptance.py`（23 条判据，真跑 GPU）：
+---
 
-| 判据（引自 `PLAN.md` §8） | 实测 |
+## 它解决什么问题
+
+想从一批视频里拿到文字，现在通常是这条路：手动下载 → 传到某家转写网站 → 等 → 复制粘贴 →
+按分钟付费 → 内容出境。视频一多就不可行，而且你始终拿到的是「一份别人服务器上的文本」。
+
+Vidigest 把它做成一条**本地流水线**：粘一批链接进去，产出是一个个文件夹——
+带时间轴的转写稿（`.txt` / `.srt` / `.json`）、按镜头切好的帧图拼版、以及一份 `summary.md`。
+模型跑在自己的显卡上，没有额度、没有按分钟计费、断网也能继续跑。
+
+## 功能
+
+| 能力 | 说明 |
 |---|---|
-| 10 条任务全部完成 | ✅ 10 done（+1 条故意混入的坏链接 failed） |
-| 坏链接失败不影响其余 | ✅ 坏链接停在下载阶段，其余 10 条正常 done |
-| 杀进程后重启，已完成的不重跑 | ✅ 强杀后 3 done / 1 transcribing / 6 downloaded / 1 failed；续跑时 3 条 done 的状态、`updated_at`、转写稿 mtime **三者均未被改动** |
-| 流水线架构（`PLAN.md` §11.2 的设计推断） | ✅ 重叠系数 **1.10×**（> 1.0 即阶段确实重叠），转写峰值并发 **1** |
+| **多平台下载** | 抖音（分享文案直接粘贴，自动抽链接）、B站、YouTube、X；也可直接喂本地视频文件 |
+| **本地 GPU 转写** | faster-whisper `large-v3` + CTranslate2，输出 `txt` / `srt` / `json` 三种形态 |
+| **断点续跑** | 任务状态落 `state.db`。强杀进程后重启，已完成的不重跑，停在中间态的回退到上一个稳定态 |
+| **流水线调度** | 下载 / 转写 / 抽帧三级流水线，阶段间重叠；转写恒为 1（单卡串行是物理事实），下载与抽帧并发数按实测可用内存动态规划 |
+| **抽帧拼版** | 场景切分取关键帧，6×4 拼成一张图，20 分钟视频约 9 张 |
+| **画面理解 + 汇总** | 拼版图交给 Qwen3-VL 2B（本地，GGUF + llama.cpp）或云 API，产出 `visual.md` / `summary.md`。**本地优先，起不来才走云，两级都不通时跳过并说明缺什么** |
+| **桌面 GUI** | Rust + Tauri 2。模型不进安装包，设置为「点一下下载」 |
+| **单文件分发** | 装完不需要目标机器上有 Python 或 Rust（Python 侧已打成 PyInstaller 产物随包分发） |
 
-> 重叠系数只有 1.10× 是**如实结果**，不是问题：60 秒片段的转写占全部阶段耗时约 90%，
-> 可与它重叠的只有下载（毫秒）与抽帧（约 1 秒）。真实 20 分钟视频的转写占比更高，
-> 重叠收益只会更小——这恰好印证 `PLAN.md` §3.1「转写是串行瓶颈」的判断。
+## 界面
 
-> 基线在 2026-10-03 **换代过**：v1 因产生它的 `initial_prompt` 未记录而作废，v2 附带**完整参数快照**
-> （`samples/README.md`）。判据始终是「逐字符严格相等」，**从未放宽**。证据链见 `docs/实测记录.md` §2.4。
->
-> **流程教训**：验收基线必须与产生它的完整参数一起存档。只存产出不存参数，"金标准"不可验证。
+<p align="center">
+  <img src="docs/images/readme/main-window.png" alt="主界面" width="620">
+</p>
 
-## 仓库内容边界
+<p align="center"><sub>主界面：每条任务是两行式列表——标题独占一行，状态 / 四段阶段点（下载→转写→抽帧→汇总）/ 进度 / 耗时退成元信息行。800×600 是默认窗口尺寸。</sub></p>
 
-本仓库只放**源码与技术文档**——clone 下来装好依赖、下好模型即可运行，不需要仓库外的素材。
+<p align="center">
+  <img src="docs/images/readme/settings-model.png" alt="设置页" width="720">
+</p>
 
-| 类型 | 内容 | 入库 |
-|---|---|---|
-| 源码 | `app/`、`prototypes/`、`tools/` | ✅ |
-| 技术文档 | `PLAN.md`、`README.md`、`handoff.md`、`docs/PRD.md`、`docs/实测记录.md`、`docs/IPC协议规格.md`、`docs/工程约定.md`、`docs/打包与分发.md`、`prototypes/README.md`、`samples/README.md` | ✅ |
-| 配置模板 | `config.example.yaml`、`requirements.txt` | ✅ |
-| 模型权重 | `models/large-v3/`（2.87 GB） | ❌ 自行下载，见「快速开始」第 3 步 |
-| 用户配置 | `config.yaml` | ❌ 含本机路径，自行生成 |
-| 运行时数据 | `work/`、`state.db`、`cookies.txt`、日志 | ❌ |
-| 测试材料 | `samples/` 下的视频、元数据、转写稿、拼版图 | ❌ 派生自第三方视频 |
-| Agent 工作数据 | `.workbuddy/` | ❌ |
-
-测试材料**保留在本地磁盘**（阶段 1 验收依赖它们），只是不进版本库。原因与代价见 `samples/README.md`。
-
-## 目录导航
-
-```
-Vidnote/
-├── handoff.md               # ★交接：当前进度 + 下一步该做什么
-├── PLAN.md                  # ★开发计划书：架构、接口契约、并发公式、验收清单
-├── README.md                # 本文件
-├── dev.sh                   # ★一键构建：release / dev / check / worker / clean
-├── requirements.txt         # Python 依赖（含 CUDA 运行库的安装注意事项）
-├── config.example.yaml      # 配置模板，复制为 config.yaml 使用
-├── app/                     # ★Python 功能层
-│   ├── core/                #   env_probe / cuda_dll / ffmpeg_locator / store / urls
-│   │                        #   concurrency / fetcher / audio / transcriber / frames
-│   │                        #   pipeline（单条执行器）+ dispatcher（流水线调度）
-│   │                        #   proc（子进程回收）—— cli 与 rpc 共用
-│   ├── models/              #   Task / Config 数据类
-│   ├── cli.py               #   人用入口 + 验收入口（--jobs 1 走串行黄金路径）
-│   └── rpc.py               #   Rust 宿主入口（sidecar 常驻 worker）
-├── app-ui/                  # ★Rust + Tauri 工程（阶段 3；目录名未随应用改名而改）
-├── packaging/               # ★PyInstaller spec + Tauri bundle overlay（resources 映射）
-├── prototypes/              # ★已验证原型脚本，阶段 1 重构的直接输入
-│   ├── transcribe.py        #   → app/core/transcriber.py（含 CUDA DLL 加载的正确实现）
-│   ├── make_sheets.py       #   → app/core/frames.py
-│   ├── state2cookie.py      #   → app/core/cookies.py（⚠ 阶段 4 未开始，cookies.py 尚不存在）
-│   └── README.md            #   各脚本的接口与环境假设
-├── tools/
-│   ├── probe_env.py         #   → app/core/env_probe.py（硬件探测，已实跑）
-│   ├── probe_spawn_env.py   #   判「能否 spawn 带 stdin 管道的子进程 + 是否被沙箱注入」
-│   ├── rpc_smoke.py         #   IPC 协议冒烟测试（19 条判据，不依赖 Rust 端）
-│   ├── dispatcher_selftest.py   # 调度器语义自测（66 条判据，假阶段函数，秒级跑完）
-│   ├── phase2_acceptance.py     # 阶段 2 正式验收（23 条判据，真跑 GPU）
-│   ├── fetcher_selftest.py      # 下载层自测（7 条：cookie 失败翻译，纯逻辑不联网）
-│   ├── refresh_cookies.py       # 手动刷新抖音 cookie（阶段 4 自动化前的过渡）
-│   ├── build_worker.py      #   PyInstaller 构建 + 28 项冒烟（含真实推理验证 GPU）
-│   └── capture_window.py    #   窗口截图（自动化点击前必做 WindowFromPoint 归属自检）
-├── models/                  # 模型权重目录（内容不入库，需自行下载）
-├── samples/                 # 测试基线（内容不入库，仅 README.md 入库）
-└── docs/
-    ├── PRD.md               # ★产品需求文档：最终目标 D1–D6、需求、最终验收标准
-    ├── 工程约定.md           # ★60+ 条硬规则全量清单（改代码前必读）
-    ├── 实测记录.md           # ★事实源：本机性能实测与环境快照
-    ├── IPC协议规格.md         # ★Rust 宿主 ↔ Python Worker 的接口契约
-    ├── 打包与分发.md          #   两层打包、NSIS 判死依据、干净机验证清单
-    ├── 阶段3_打通记录.md      #   Rust↔Python 打通的三个阻塞（含真实代码缺陷）
-    ├── 阶段3_界面确认.md      #   界面确认 + 沙箱外验证清单（§7.8 / §7.9）
-    └── 样例产出_参考.md       #   产出形态参考（本地留存，不入库）
-```
+<p align="center"><sub>设置页：左侧六个分类（模型 · 转写 · 画面 · 汇总 · 存储 · 维护），右侧一卡一事。</sub></p>
 
 ## 快速开始
 
-### 1. 前置要求
+### 路线 A：装安装包
 
-| 组件 | 要求 | 安装方式 |
+> ⚠️ **目前还没有发布 Release**，安装包需自行构建（见下方路线 B 的 `./dev.sh release`，
+> 一条命令约 8 分钟）。首个 Release 待「干净机器验证」完成后发布。
+
+拿到 `Vidigest_x.y.z_x64_en-US.msi` 后双击安装。装完启动，分三步：
+
+1. **设置 → 存储**：选产出目录（默认挑剩余空间最大的非系统盘）与模型目录；
+2. **设置 → 模型**：点「下载」拉语音模型（约 2.9 GB）；想要画面理解再拉视觉模型（约 2.3 GB）；
+3. **主界面顶部**：粘贴链接（一行一条），点「开始」。
+
+数据落在 `%LOCALAPPDATA%\Vidigest`，产出落在你自己选的目录，卸载不会删产出。
+
+### 路线 B：从源码跑
+
+**前置要求**
+
+| 组件 | 要求 | 获取方式 |
 |---|---|---|
-| Python | 3.13（实测 3.13.14） | — |
-| ffmpeg | **9.x full build**（`-vsync` 已移除，见「已知坑」） | `winget install --id Gyan.FFmpeg -e` |
+| Windows | 10 / 11 x64（**目前只在 Windows 上验证过**） | — |
+| Python | 3.13 | [python.org](https://www.python.org/downloads/) |
+| NVIDIA GPU | 显存 ≥ 8 GB，驱动支持 CUDA 12（实测于 RTX 4060 Ti 16 GB / 驱动 610.88） | 显卡驱动 |
+| ffmpeg | **9.x full build**（`-vsync` 自 9.0 起被移除，见 [FAQ](#常见问题)） | `winget install --id Gyan.FFmpeg -e` |
 | yt-dlp | 最新版 | `pip install -U yt-dlp` |
-| Node.js | 仅 cookie 采集需要 | `npm i -g @playwright/cli` |
-| NVIDIA GPU | 显存 ≥ 8 GB（实测 RTX 4060 Ti 16 GB / 驱动 610.88） | 显卡驱动 |
-| Rust 工具链 | **仅阶段 3 起需要**（UI 层用 Tauri），本机尚未安装 | `winget install Rustlang.Rustup` + VS Build Tools |
-| CUDA 运行库 | cublas / cudnn / nvrtc 12.x | 见第 2 步 |
+| Rust + Node.js | 仅构建 GUI 需要 | `winget install Rustlang.Rustup` + VS Build Tools |
 
-> ⚠️ **GPU 转写是硬要求，不是优化项。**
-> 实测同一条 20 分钟音频：GPU（float16）**2 分 18 秒**，CPU（int8）**13 分 54 秒**，差 6.0 倍。
-> 100 条视频在 CPU 上要 23 小时，GPU 上 3.8 小时。CPU 方案批量场景不可用。依据见 `docs/实测记录.md` §2。
-
-### 2. 安装依赖
+> **GPU 不是优化项，是前提。** 同一条 20 分钟音频：GPU（float16）**2 分 18 秒**，CPU（int8）
+> **13 分 54 秒**，差 6.0 倍。100 条视频在 CPU 上要 23 小时，GPU 上 3.8 小时。
 
 ```bash
-python -m venv .venv
-.venv/Scripts/activate
+git clone https://github.com/benntqoo/Vidnote.git && cd Vidnote
+python -m venv .venv && .venv/Scripts/activate
 
 pip install -r requirements.txt
+# Windows 上 CUDA 运行库不在 PATH 上，必须单独装
+pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-nvrtc-cu12
 
-# CUDA 运行库：Windows 必需，DLL 不在 PATH 上
-# 注意：PyPI 直连会卡死，必须用国内镜像**且**禁用代理（否则 pip 绕道系统代理反而更慢）
-pip install -i https://mirrors.cloud.tencent.com/pypi/simple --proxy "" \
-    nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-nvrtc-cu12
+cp config.example.yaml config.yaml     # 改 paths.work_dir / paths.model_dir
+python -m app.cli env --verify         # 真跑一次推理，确认 CUDA 可用（约 5 秒，占 3 GB 显存）
 ```
 
-### 3. 下载模型（2.87 GB，不入库）
-
-HuggingFace 直连不通，走 hf-mirror。但镜像对 LFS 文件会 302 到 xethub，而 `huggingface_hub` 默认下载超时只有 10 秒，容易失败——用 `curl -C -` 断点续传最可靠：
+模型（约 2.9 GB，不入库）从 `hf-mirror.com/Systran/faster-whisper-large-v3` 取，
+放成 `models/large-v3/`。镜像对 LFS 文件会 302 到 xethub，`curl -C -` 断点续传最稳：
 
 ```bash
 mkdir -p models/large-v3 && cd models/large-v3
@@ -154,132 +128,218 @@ for f in config.json preprocessor_config.json tokenizer.json vocabulary.json mod
   curl -sL --retry 5 --retry-delay 3 -C - -o "$f" \
     "https://hf-mirror.com/Systran/faster-whisper-large-v3/resolve/main/$f" &
 done; wait
-cd ../..
 ```
 
-实测约 41 MB/s，全程约 1 分 35 秒。完成后 `model.bin` 应约 2.87 GB。
-
-### 4. 配置
+跑起来：
 
 ```bash
-cp config.example.yaml config.yaml
+python -m app.cli run "https://v.douyin.com/xxxxx/" --cookies cookies.txt   # 单条
+python -m app.cli run --file urls.txt --limit 10                            # 批量
+python -m app.cli run --file urls.txt --jobs 1                              # 强制串行
+python -m app.cli list                                                      # 看任务表
+./dev.sh release                                                            # 出 MSI
 ```
 
-按需修改 `paths.work_dir`（**必须在 D 盘**，C 盘仅剩 150 GB）与 `runtime` 各项。字段语义见 `PLAN.md` §5。
+完整参数：`python -m app.cli run --help`、`./dev.sh --help`。
 
-### 5. 环境自检
+## 产出长什么样
 
-```bash
-python -m app.cli env            # 秒级：CPU/内存/磁盘/GPU/ffmpeg/yt-dlp/模型
-python -m app.cli env --verify   # 额外跑一次真实推理确认 CUDA（约 5 秒，占 3 GB 显存）
+```
+<work_dir>/0001_<安全化的标题>/
+├── video.mp4                 # 原始视频（--no-keep-intermediate 可省）
+├── audio.wav                 # 16 kHz 单声道，转写的输入
+├── transcript.txt            # 纯文本，带段落
+├── transcript.srt            # 字幕，带时间轴
+├── transcript.json           # 分段结构化（每段的起止秒数 + 文本）
+├── frames/                   # 场景切分后的关键帧
+├── sheets/                   # 6×4 拼版图，喂给视觉模型的就是它们
+├── visual.md                 # 画面理解结果（含每张拼版图覆盖的时间范围）
+└── summary.md                # 汇总：结构化摘要（AI 后端可用时才生成）
 ```
 
-确认输出中 GPU 可用、模型存在、ffmpeg 与 yt-dlp 已定位。
+`transcript.json` 的每一段都带**真实时间戳**（由音频时长算，不由模型猜），
+所以 `.srt` 拖进任何播放器都能对上画面。
 
-> ⚠️ `ctranslate2.get_cuda_device_count() == 1` **不代表 GPU 可用**，只代表检测到硬件。
-> 真正的验证是跑一次真实推理——这就是 `--verify` 做的事。
+## 工作原理
 
-### 6. 运行
-
-```bash
-# 单条在线链接（抖音分享文案可直接粘贴，会自动抽 URL）
-python -m app.cli run "https://v.douyin.com/xxxxx/" --cookies cookies.txt
-
-# 本地文件
-python -m app.cli run samples/video.mp4 --no-frames
-
-# 批量（从文本文件，每行一条）
-python -m app.cli run --file urls.txt --limit 10
-
-# 并发调度（默认）：下载/抽帧按实测内存自动规划，转写恒为 1（GPU 单卡串行）
-python -m app.cli run --file urls.txt
-python -m app.cli run --file urls.txt --jobs 1     # 强制串行，阶段 1 验收走的那条路径
-python -m app.cli run --file urls.txt --trace trace.json   # 落盘各阶段起止记录
-
-# 查看任务表
-python -m app.cli list
+```mermaid
+flowchart LR
+  IN["链接 / 本地文件"] --> P1["下载<br/>yt-dlp"]
+  IN --> P2["抽帧 + 拼版<br/>ffmpeg 场景切分"]
+  P1 --> P3["抽音频<br/>ffmpeg → 16 kHz wav"]
+  P3 --> P4["转写<br/>faster-whisper / CTranslate2 CUDA"]
+  P2 --> V["画面理解<br/>Qwen3-VL 2B 本地 · 云 API 兜底"]
+  P4 --> OUT["transcript.txt / .srt / .json"]
+  V --> S["summary.md"]
+  P4 --> S
+  OUT --> DB[("state.db<br/>断点续跑")]
 ```
 
-产出结构：`<work_dir>/<四位序号>_<安全标题>/`，内含
-`video.mp4 / audio.wav / transcript.{txt,srt,json} / frames/ / sheets/`。
+分工是硬边界：**Rust 宿主只做窗口与进程管理，全部计算在 Python 侧**（PyInstaller 打成一个
+常驻 worker，由宿主 spawn 并托管生命周期）。两侧用 **JSON Lines over stdin/stdout**
+通信——不占端口，因此不需要防火墙规则、不会被安全软件拦、也不会和别的程序抢端口。
+`stdout` 只走协议，所有日志走 `stderr`。
 
-常用开关：`--initial-prompt`（领域术语提示，**会改变分段与标点**，见 `docs/实测记录.md` §2.4）、
-`--frames`、`--jobs`、`--trace`、`--retry`、`--force`（删产出重跑）、`--dry-run`。
+调度上只有一条设计约束：**转写池恒为 1**。单卡上并发转写只会互相抢显存并把总耗时拉长，
+而下载与抽帧可以和转写重叠——所以「三级流水线」的收益全在掩盖下载延迟，不在并行转写。
 
-**中断与续跑**：Ctrl+C 会「停止取新任务，等在跑的跑完（最长 30 秒）」，已完成的进度留在 `state.db`。
-下次运行同一条命令即自动续跑——已完成的不重跑，停在中间态的回退到上一稳定态。
-**不需要** `--retry`（那是给 `failed` / `cancelled` 用的）。
+## 性能与硬件
 
-## 打包（GUI 安装包）
+参考实测（RTX 4060 Ti 16 GB，Windows 11，20 分 04 秒 / 720p 视频）：
 
-```bash
-./dev.sh release     # 出 MSI 安装包（约 5 分钟）
-./dev.sh --help      # 其余子命令：dev / bundle-dev / worker / check / clean
-```
-
-产物：`app-ui/src-tauri/target/release/bundle/msi/Vidigest_0.1.0_x64_en-US.msi`（**1.45 GiB**）。
-装完的形态：安装目录 `%ProgramFiles%\Vidigest\`，桌面 / 开始菜单快捷方式名叫 `Vidigest`，
-卸载项 `Uninstall Vidigest`，数据目录 `%LOCALAPPDATA%\Vidigest`；
-**主程序文件名是小写的 `vidigest.exe`**（Tauri 用 cargo 包名，`productName` 不改它 —— 查进程时注意）。
-（~~**2026-10-06 应用改名**：`productName` 由脚手架的 `app-ui` 改为 `Vidnote`；~~ →
-**2026-10-14 再次改名：`Vidnote` → `Vidigest`**，同时把数据目录从 `%LOCALAPPDATA%\Vidnote`
-迁到 `%LOCALAPPDATA%\Vidigest`、`identifier` 改为 `com.benntqoo.vidigest`
-⇒ **装了旧版必须先卸载**。`app-ui/` 只是工程目录名，两次改名都没动它。）
-装完的程序**不需要用户机器上有 Python 或 Rust** —— Python 侧已打成
-PyInstaller 单目录产物，作为 Tauri 的 resources 落进 `<安装目录>\worker\`。
-
-Windows 上从 cmd / PowerShell 调要写成 `bash dev.sh release`。
-
-三个与直觉相反的点（细节见 `docs/打包与分发.md`）：
-
-- **只有 MSI，没有 `-setup.exe`**：2.5 GiB 载荷超 NSIS 的 2 GiB 硬限制，
-  且 Tauri 模板把 `/SOLID` 写死，改压缩算法无效。NSIS 那条路已判死。
-- **第一次构建要联网**：WiX 工具链是自动下载的（`%LOCALAPPDATA%\tauri`），之后可离线。
-- **模型（2.9 GiB）不进包**：首次启动会生成 `%LOCALAPPDATA%\Vidigest\config.yaml`，
-  把 `large-v3` 放进去或改 `model_dir` 指向已有模型。
-
-未验证：**干净机器**上的安装与运行（同机模拟不算，本机有 Python 也有 Rust）。
-
-## samples/ — 测试基线（本地留存，不入库）
-
-阶段 1 的验收方式是「重跑同一段视频，产出与基线逐字符比对」。基线文件**不进 git**（派生自第三方视频），但在本地必须保留，**不要删**。原因、代价与重建方式见 `samples/README.md`。
-
-| 文件 | 用途 |
+| 项目 | 实测值 |
 |---|---|
-| `video.mp4` | 测试输入，20 分 04 秒，1280×720，HEVC，44 MB |
-| `video.info.json` | yt-dlp 元数据（标题、作者、时长、发布日） |
-| `transcript_gpu.txt` / `.srt` / `.json` | **金标准（v2）**：GPU float16 转写，662 段。完整参数快照见 `samples/README.md` |
-| `transcript_cpu_int8.txt` / `.srt` / `.json` | 对照：CPU int8 转写结果（13 分 54 秒，646 段，分段边界略异） |
-| `archive/` | 已作废的 v1 基线（649 段，参数未记录） |
-| `frames_index.json` | 场景抽帧索引（212 帧，含每帧时间戳） |
-| `sheets/` | 抽帧拼版产出样例（9 张 6×4 网格） |
+| GPU 转写（large-v3 float16） | **2 分 18 秒**，662 段 |
+| CPU 转写（int8） | 13 分 54 秒，646 段（分段边界与 GPU 版不同，不可逐字比对） |
+| 转写可复现性 | 同配置两次独立运行产出**逐字节一致**——因此验收判据可以设成严格相等 |
+| 视觉模型（Qwen3-VL 2B Q4_K_M） | **1.8 秒/张**拼版图，显存 3275 MiB |
+| 显存占用 | 语音模型约 3–5 GB（估算）+ 视觉模型 3.3 GB，16 GB 卡上实测可共存 |
+| 安装包体积 | **1.49 GiB**（模型不进包） |
 
-**基线比对建议**：同配置下转写**可逐字节复现**（2026-10-03 两次独立运行验证，见 `docs/实测记录.md` §2.4），
-所以阶段 1 验收直接用严格相等。跨配置（GPU ↔ CPU）**不复现**——两版基线本身不同（662 vs 646 段），
-比对前先确认用哪个。
+磁盘：语音模型 2.9 GB + 视觉模型 2.3 GB，另加每条视频的产出
+（20 分钟 720p 视频本体 44 MB，另加 9 张拼版图）。
 
-> ✅ **2026-10-03：基线已换代（v1 → v2）** 并附**完整参数快照**（`samples/README.md`）。
-> v1（649 段）因产生它的 `initial_prompt` 未记录而作废。判据未放宽，只是基线换代——
-> **比对失败先查参数快照表，不要先怀疑代码**（实现与原型同参数下已实测逐字节一致）。
+## 配置
 
-## 已知坑（改代码前必读 `docs/工程约定.md` —— 那里是 60+ 条全量清单）
+`config.yaml` 由 `config.example.yaml` 复制而来，字段语义见 [`PLAN.md`](PLAN.md) §5。
+最常改的几个：
 
-下面 11 条是最容易踩的；另有 `PLAN.md` §9。
+| 字段 | 作用 |
+|---|---|
+| `paths.work_dir` / `paths.model_dir` | 产出与模型的落点 |
+| `runtime.device` / `compute_type` | `cuda` / `float16` 是默认；退到 `cpu` / `int8` 也能跑，但慢 6 倍 |
+| `transcribe.language` / `initial_prompt` | 语言留空为自动检测；**`initial_prompt` 会改变分段与标点**，它影响验收基线，必须随基线一起记录 |
+| `transcribe.beam_size` | 默认 5。降低可换速度 |
+| `frames.enabled` / `max_sheets` | 是否抽帧拼版、最多出几张 |
+| `vision.enabled` | 是否做画面理解（需要本地视觉模型或云 API） |
+| `local_ai.enabled` / `server_path` / `model_dir` | 本地 llama.cpp 后端；路径留空时自动从模型目录里找 `llama-server.exe` |
+| `summarize.enabled` | 是否生成 `summary.md`；两级后端都不可用时会被跳过并在日志里说明缺什么 |
 
-1. **CUDA DLL 加载**：`os.add_dll_directory()` 的返回值**必须引用住**，且还要注入 `PATH`，且必须在 `import ctranslate2` 之前 —— 三层缺一不可，否则报 `cublas64_12.dll not found`。
-2. `ctranslate2.get_cuda_device_count() == 1` **不代表 GPU 可用**，只代表检测到硬件。真正的验证是跑一次真实推理。
-3. **faster-whisper 1.2.1 与 av 19 不兼容**（`metadata_errors` 已移除）—— 绕开 PyAV，用 `wave` + `numpy` 直读 wav。
-4. **ffmpeg 9.0 移除了 `-vsync`** —— 改用 `-fps_mode passthrough`。
-5. **yt-dlp 读浏览器 cookie 在 Windows 新版浏览器上必失败** —— 走 playwright-cli 导出 storage-state 再转 Netscape 格式（过渡脚本 `python tools/refresh_cookies.py`；抖音**匿名也要求**新鲜 cookie，ttwid 约 24 小时过期，缺失时任务会以可操作提示失败）。
-6. Playwright 自带的 ffmpeg 是 `--disable-everything` 构建，**没有 mp4 demuxer**，不能用。
-7. **WinGet `Links/` 下的 `ffmpeg.exe` 是 0 字节占位文件**（app execution alias）——`shutil.which()` 能命中，但调用会报 `[WinError 193] 不是有效的 Win32 应用程序`。定位时必须校验「非空 + PE 头 `MZ`」，真实可执行在 `WinGet/Packages/Gyan.FFmpeg_*/`。
-8. **`initial_prompt` 会改变分段与标点**，不只是纠术语——同一音频加了它从 681 段碎句变 662 段整句带标点。它是影响验收判据的强参数，必须随基线一起记录。
-9. **`dispatcher.submit()` 会主动跳过 `done` 状态的任务**。`--force` / `--retry` 要跑的恰恰是 `done` / `failed` 的那几条，所以必须在入队前把状态重新盖成 `pending`——否则 `--force` 会「删完产出目录却一条都不入队」，日志里只剩一句「没有任务被入队」（2026-10-03 实测踩到）。
-10. **子进程输出必须两端都钉死 UTF-8**。Windows 下子进程默认按本地代码页（cp936）编码，父进程按 UTF-8 解码 → `UnicodeDecodeError` 抛在读取线程里、日志全丢。子进程设 `PYTHONUTF8=1` + `PYTHONIOENCODING=utf-8`，父进程 `subprocess.run(..., encoding="utf-8", errors="replace")`。`taskkill` 同理（它会往 stderr 写 cp936 提示）。
-11. **不要用 `shutil.rmtree` 删整批产出目录**。一批任务的产出有 200+ 个文件，会命中受管环境的批量删除确认（阈值 50）而中断脚本。改为「改名旁置」，既不受该规则影响，又保留了现场。
+云端的 API key **只从环境变量读**（默认 `VIDIGEST_API_KEY`，变量名可在 `summarize.api_key_env` 改），
+写进配置文件会被丢弃并给出 `E_API_KEY_NOT_ALLOWED` 警告 —— 配置文件是明文的，密钥不该落在里面。
 
-## 内存约束（第一约束，不是 CPU 也不是显存）
+## 已知限制
 
-总 61.6 GB，**实测可用内存波动区间 12.6 ~ 26.2 GB**（同日 1 小时内两次测量差一倍）。
+- **只在 Windows 上验证过**。CLI 侧理论上跨平台，但没有 macOS / Linux 的构建与实测。
+- **需要 NVIDIA GPU 才有实用速度**（见上方 6.0 倍差距）。
+- **抖音多数内容需要登录后的 cookie**，且匿名访问也要求新鲜 `ttwid`（约 24 小时过期）。
+  程序会明确提示「cookie 失效」，不会静默失败。
+- **没有系统托盘**：关窗即退出，后台继续跑还没做。
+- **批量勾选 UI 未做**：能按作者列出作品的后端已就绪，界面还没有多选。
+- **未在干净机器上验证安装**：开发机同时装了 Python 与 Rust，而两者正是安装包声称
+  「不需要」的东西，所以在同一台机器上验证等于没有验证。
+- 目前**没有发布 Release**，只有自行构建的 MSI。
 
-这一个数字就说明了为什么**并发数绝不能写死**——`PLAN.md` §3.2 的动态探测公式是本机唯一可行的方案。跑批前建议关掉浏览器等占内存程序。
+## 常见问题
+
+<details>
+<summary><b>为什么只有 MSI，没有 <code>-setup.exe</code>？</b></summary>
+
+载荷 2.5 GiB 超过 NSIS 的 2 GiB 硬限制，且 Tauri 模板把 `/SOLID` 写死，改压缩档位无效。
+NSIS 那条路已判死，只保留 WiX MSI。细节见 [`docs/打包与分发.md`](docs/打包与分发.md)。
+</details>
+
+<details>
+<summary><b><code>cublas64_12.dll not found</code> 怎么办？</b></summary>
+
+CUDA 运行库不在 Windows 的 DLL 搜索路径上，并且加载时序敏感：
+`os.add_dll_directory()` 的返回值**必须被引用住**、还要把目录塞进 `PATH`、并且必须在
+`import ctranslate2` 之前完成——三层缺一不可。代码里已按这个顺序处理，自己写脚本时注意同样三点。
+</details>
+
+<details>
+<summary><b><code>get_cuda_device_count() == 1</code> 算不算 GPU 可用？</b></summary>
+
+不算。它只说明**检测到了硬件**。真正的验证是跑一次真实推理——`python -m app.cli env --verify`
+干的就是这件事。
+</details>
+
+<details>
+<summary><b>ffmpeg 报 <code>Unrecognized option 'vsync'</code>？</b></summary>
+
+ffmpeg 9.0 移除了 `-vsync`，本项目已改用 `-fps_mode passthrough`；报这个错说明你在跑旧代码或有
+别的工具在调 ffmpeg。
+</details>
+
+<details>
+<summary><b>为什么应用叫 Vidigest，仓库却叫 Vidnote？</b></summary>
+
+`VidNote` / `ViNote` / `VideoNote` 在同类项目里都已被占用，所以 2026-10-14 把**应用名**改成了
+`Vidigest`，而本地目录与 GitHub 仓库名刻意没动（改仓库名会让已有 clone 和链接全部失效）。
+详见 [`docs/改名执行单.md`](docs/改名执行单.md)。
+</details>
+
+## 路线图
+
+- [x] 核心流水线（下载 → 转写 → 抽帧）与逐字节可复现的验收基线
+- [x] 并发调度、断点续跑、内存护栏
+- [x] 桌面 GUI（Tauri + Python sidecar）与一键出包
+- [x] 本地视觉模型（Qwen3-VL 2B）与「本地优先、云 API 兜底」
+- [x] 模型改为装完点一下下载，不进安装包
+- [ ] 批量勾选：按作者列出作品 → 多选 → 入队（后端就绪，UI 待做）
+- [ ] 系统托盘 + 关窗后台继续
+- [ ] 干净机器安装验证 → 首个 Release
+- [ ] cookie 自动刷新
+- [ ] macOS / Linux 支持（未验证，无排期）
+
+## 开发与测试
+
+```bash
+./dev.sh check      # 全量判据，秒级，不需要 GPU
+./dev.sh release    # 出 MSI（约 8 分钟，含 PyInstaller + Tauri 两层构建）
+./dev.sh --help     # dev / bundle-dev / worker / check / clean
+```
+
+测试不是「有一个测试文件」，而是**按层拆开、每条判据都能单独跑**：
+
+| 层 | 命令 | 判据数 |
+|---|---|---|
+| IPC 协议 | `python tools/rpc_smoke.py` | 70 |
+| 调度语义 | `python tools/dispatcher_selftest.py` | 66 |
+| 下载层 | `python tools/fetcher_selftest.py` | 7 |
+| 模型下载器 | `python tools/model_downloader_selftest.py` | 11 |
+| 主界面状态视图 | `node --experimental-strip-types tools/main_layout_selftest.mts` | 24 |
+| Rust 单测 | `cargo test --lib`（`app-ui/src-tauri`） | 23 |
+| 打包产物冒烟 | `python tools/build_worker.py` | 29 |
+| 出包后核对 | `python tools/postcheck_packaged_worker.py` | 10 |
+| 端到端（真跑 GPU，约 3 分钟） | `python tools/phase2_acceptance.py all` | 23 |
+
+前六项由 `./dev.sh check` 串起来跑。改代码之前建议先读
+[`docs/工程约定.md`](docs/工程约定.md)——那里是 60+ 条踩过的坑，每条都附了「指纹」：
+看到什么现象就对应哪个原因。
+
+## 文档地图
+
+| 文档 | 内容 |
+|---|---|
+| [`docs/PRD.md`](docs/PRD.md) | 产品目标、需求、最终验收标准 |
+| [`PLAN.md`](PLAN.md) | 架构、接口契约、并发公式、验收清单 |
+| [`docs/工程约定.md`](docs/工程约定.md) | 60+ 条硬规则全量清单（改代码前必读） |
+| [`docs/实测记录.md`](docs/实测记录.md) | 性能实测与环境快照 —— 事实源 |
+| [`docs/IPC协议规格.md`](docs/IPC协议规格.md) | 宿主 ↔ worker 的接口契约 |
+| [`docs/打包与分发.md`](docs/打包与分发.md) | 两层打包、NSIS 判死依据、干净机验证清单 |
+| [`docs/主界面版式改版.md`](docs/主界面版式改版.md) · [`docs/设置页版式改版.md`](docs/设置页版式改版.md) | 界面版式的取舍理由与验收判据 |
+| [`handoff.md`](handoff.md) | 当前进度与下一步（偏开发向） |
+
+## 参与贡献
+
+这是个个人项目，但 issue 和 PR 都欢迎。提 issue 时请带上：Windows 版本、显卡型号、
+`python -m app.cli env` 的输出，以及能复现问题的那条链接（**敏感链接请自行脱敏**）。
+
+改代码前请先跑一遍 `./dev.sh check` 确认基线是绿的；新增行为请同时给出判据——
+这个仓库的判据一律是「能被单独跑的脚本 + 明确的条数」，不是「我看过了」。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 Ben
+
+第三方组件的许可遵循各自上游：faster-whisper 与 CTranslate2（MIT）、yt-dlp（Unlicense）、
+Tauri（MIT / Apache-2.0）、llama.cpp（MIT）、Qwen3-VL 权重（遵循其上游许可）。
+**ffmpeg 不随本项目分发**，需自行安装，其许可证取决于你所选构建（GPL / LGPL）。
+
+## 致谢
+
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) / [CTranslate2](https://github.com/OpenNMT/CTranslate2) —— 让本地转写快到可用
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) —— 下载层几乎全部工作量
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) —— 让 2B 视觉模型能塞进 3 GB 显存
+- [Tauri](https://tauri.app/) —— 1.5 GiB 的安装包而不是 150 MB 的 Electron

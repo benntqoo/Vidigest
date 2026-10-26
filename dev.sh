@@ -218,6 +218,12 @@ cmd_check() {
   step "主界面状态视图 —— tools/main_layout_selftest.mts"
   run node --experimental-strip-types "$REPO/tools/main_layout_selftest.mts"
 
+  # README 是 GitHub 首页的门面，而 docs/ 里的文件会改名、移动、合并 ——
+  # 改一次名字，README 里那条链接就静默变 404，渲染端不会报错，只有点的人知道。
+  # 同时守住「本机 / C 盘 / 我的显卡」这类只对作者成立的句子不进对外文档。
+  step "README 自检 —— tools/readme_check.py"
+  run "$PY" "$REPO/tools/readme_check.py"
+
   say ""
   ok "全部判据通过"
 }

@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    Vidigest 应用图标（唯一真源）。
+    语义：播放三角 = 视频，右侧三条递减的文字条 = 转写稿 / 摘要。
+    即 “Video → Digest” 这个动作本身，而不是抽象几何。
+
+    重新生成各平台尺寸：
+      cd app-ui && npx tauri icon ../packaging/icon/app-icon.svg
+    台架尺寸只有 32/16 px，所以这里刻意只放两个元素、不留细节：
+    小尺寸下三条文字条会糊成一块浅色纹理，仍能读出「右半边有东西」。
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6C9BFF"/>
+      <stop offset="1" stop-color="#2B49C9"/>
+    </linearGradient>
+    <!-- 顶部高光：让纯色块看起来不是一块塑料片 -->
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="232" ry="232" fill="url(#tile)"/>
+  <rect x="0" y="0" width="1024" height="1024" rx="232" ry="232" fill="url(#gloss)"/>
+  <!-- 内描边：浅色桌面上也能有清晰边界 -->
+  <rect x="3" y="3" width="1018" height="1018" rx="229" ry="229"
+        fill="none" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="6"/>
+
+  <!-- 播放三角。用同色粗描边 + round 连接把三个尖角磨圆，
+       比自己算圆角路径短得多，且不会出现尖角处的锯齿。
+       注意描边会向外扩 29，所以这里的路径尺寸比看到的视觉尺寸小一圈 -->
+  <path d="M262 366 L524 512 L262 658 Z"
+        fill="#FFFFFF" stroke="#FFFFFF" stroke-width="58" stroke-linejoin="round"/>
+
+  <!-- 文字条：三条等距、末条短一截 —— 读作「一段话」，而不是汉堡菜单。
+       rx 只给 18（不是 height/2）就是为了别变成药丸形的 skeleton 占位。
+       三条**全部 100% 白**：第一版给 0.85 / 0.7 透明度，小尺寸下糊成灰蓝、
+       像三种不同的颜色，反而不干净。 -->
+  <rect x="606" y="364" width="200" height="72" rx="18" fill="#FFFFFF"/>
+  <rect x="606" y="476" width="200" height="72" rx="18" fill="#FFFFFF"/>
+  <rect x="606" y="588" width="132" height="72" rx="18" fill="#FFFFFF"/>
+</svg>
