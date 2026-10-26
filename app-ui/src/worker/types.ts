@@ -272,3 +272,23 @@ export function formatBytes(n: number): string {
   }
   return `${i === 0 ? Math.round(v) : v.toFixed(2)} ${units[i]}`;
 }
+
+/** 作者作品列表里的一条。`url` 可直接交给 `add_tasks`。 */
+export interface AuthorItem {
+  url: string;
+  title: string;
+  duration: number;
+  item_id: string;
+  thumb: string;
+}
+
+/** `list_author` 的响应（事件 `author_page`）。 */
+export interface AuthorPage {
+  platform: string;
+  title: string;
+  total: number;
+  /** 是否因为 limit 被截断 —— UI 要如实说"还有更多" */
+  truncated: boolean;
+  url: string;
+  items: AuthorItem[];
+}

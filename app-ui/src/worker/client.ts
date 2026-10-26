@@ -163,6 +163,11 @@ export function cancelModelDownload(): Promise<string> {
 }
 
 /** 手动重跑一次 GPU 真实验证（响应 `env_verify_started` → `env_verified`）。 */
+/** 列一个作者/频道/合集的作品（批量下载入口）。响应事件 `author_page`。 */
+export function listAuthor(url: string, limit = 0): Promise<string> {
+  return sendCommand("list_author", { url, limit });
+}
+
 /** 清空任务历史 / 工作目录内容（**不碰模型**）。 */
 export function clearData(scope: "history" | "workspace" | "all"): Promise<string> {
   return sendCommand("clear_data", { scope });

@@ -28,7 +28,7 @@ import shutil
 import sys
 import threading
 import time
-from dataclasses import fields as dataclass_fields
+from dataclasses import asdict, fields as dataclass_fields
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
@@ -36,6 +36,7 @@ from app.core import concurrency as concurrency_mod
 from app.core import env_probe
 from app.core import model_downloader
 from app.core import paths
+from app import platforms
 from app.core.dispatcher import Dispatcher
 from app.core.store import Store
 from app.core.urls import extract_many
@@ -49,7 +50,7 @@ from app.models.config import (
 from app.models.task import Task, TaskStatus
 
 PROTOCOL_VERSION = 1
-SERVER_VERSION = "0.2.2"
+SERVER_VERSION = "0.3.0"
 
 #: 内部事件名 → 协议事件名。
 #: 调度器不感知协议，它只报「发生了什么」；名字翻译在这里做，与 `STAGE_LABELS` 同理。
@@ -251,6 +252,7 @@ class Worker:
             "cancel_model_download": self._cmd_cancel_model_download,
             "verify_env": self._cmd_verify_env,
             "clear_data": self._cmd_clear_data,
+            "list_author": self._cmd_list_author,
         }
 
     # ---- 启动 ----
@@ -836,6 +838,59 @@ class Worker:
             )
         logging.info("清空数据：%s", result)
         self.proto.emit("data_cleared", result, req_id)
+
+    def _cmd_list_author(self, args: dict[str, Any], req_id: str | None) -> None:
+        """列一个作者/频道/合集的作品（批量下载的入口）。
+
+        `yt-dlp --flat-playlist -J` 要跑几秒到几十秒，所以在**工作线程**里做，
+        主循环继续处理 ping / 状态查询 —— 阻塞主循环会让人以为界面卡死。
+
+        三类结果分开表达，别混成一个：
+        - 成功 → `author_page`
+        - 该平台不支持 → `E_AUTHOR_UNSUPPORTED`（附可操作提示）
+        - 拉取失败 → `E_AUTHOR_FAILED`（网络 / 站点变了）
+        把「不支持」和「失败」混成空列表，会让用户以为作者没发过作品。
+        """
+        url = str(args.get("url") or "").strip()
+        if not url:
+            self.proto.error("E_BAD_ARGS", "list_author 需要 url", req_id=req_id)
+            return
+        try:
+            limit = int(args.get("limit") or 0)
+        except (TypeError, ValueError):
+            self.proto.error("E_BAD_ARGS", "limit 必须是整数", req_id=req_id)
+            return
+        platform = args.get("platform")
+        platform = str(platform) if isinstance(platform, str) and platform else None
+
+        cfg = self.cfg
+
+        def work() -> None:
+            try:
+                page = platforms.list_author(url, cfg, platform=platform, limit=limit)
+            except platforms.NotSupported as exc:
+                self.proto.error("E_AUTHOR_UNSUPPORTED", str(exc), req_id=req_id)
+                return
+            except Exception as exc:  # noqa: BLE001 — 网络/站点变更，如实上报
+                logging.exception("列举作者作品失败")
+                self.proto.error(
+                    "E_AUTHOR_FAILED", f"{type(exc).__name__}: {exc}", req_id=req_id
+                )
+                return
+            self.proto.emit(
+                "author_page",
+                {
+                    "platform": page.platform,
+                    "title": page.title,
+                    "total": page.total,
+                    "truncated": page.truncated,
+                    "url": url,
+                    "items": [asdict(item) for item in page.items],
+                },
+                req_id,
+            )
+
+        threading.Thread(target=work, name="list-author", daemon=True).start()
 
     # ---- 流水线控制 ----
 

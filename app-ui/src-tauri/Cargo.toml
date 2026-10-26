@@ -1,6 +1,6 @@
 [package]
 name = "vidigest"
-version = "0.2.2"
+version = "0.3.0"
 description = "Vidigest 桌面端宿主（Tauri 2）"
 authors = ["Ben"]
 edition = "2021"

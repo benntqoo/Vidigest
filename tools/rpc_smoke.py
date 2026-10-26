@@ -751,6 +751,134 @@ def check_model_dir_detect(tmp: str, judgements: list[tuple[str, bool, str]]) ->
     )
 
 
+def check_platform_registry(judgements: list[tuple[str, bool, str]]) -> None:
+    """平台注册表：一个 URL 必须落到**对的** provider 上。
+
+    这条防的是「加平台时漏一处分支」：现有 3 个平台散落在 fetcher 的 if/else 里，
+    加第 4 个时最可能的失误是 `resolve()` 返回通用实现，于是抖音的会话要求、
+    本地文件的硬链接分支都被跳过 —— 症状是「下载报错但看不出为什么」。
+    """
+    from app.platforms import resolve
+
+    cases = [
+        ("https://www.youtube.com/watch?v=abc123", "youtube"),
+        ("https://youtu.be/abc123", "youtube"),
+        ("https://www.bilibili.com/video/BV1xx411c7mD", "bilibili"),
+        ("https://b23.tv/abc", "bilibili"),
+        ("https://x.com/foo/status/123456", "twitter"),
+        ("https://twitter.com/foo/status/123456", "twitter"),
+        ("https://v.douyin.com/ye_7rRWF3tc/", "douyin"),
+        ("https://www.douyin.com/video/7123456789012345678", "douyin"),
+        ("C:/tmp/clip.mp4", "local"),
+        ("https://example.com/some/video", "unknown"),  # 交给 yt-dlp 通用兜底
+    ]
+    bad = [(u, resolve(u).name, want) for u, want in cases if resolve(u).name != want]
+    judgements.append(
+        (
+            "平台注册表 resolve() 10 个形态",
+            not bad,
+            f"不符={bad}" if bad else "10 个全对",
+        )
+    )
+
+    # 能力位：抖音与本地都没有「作者作品」。UI 靠它决定要不要显示批量入口，
+    # 报错了会让用户点了才失败。
+    from app.platforms import supports_author
+
+    ok = (
+        supports_author("https://v.douyin.com/x/") is False
+        and supports_author("C:/tmp/a.mp4") is False
+        and supports_author("https://www.bilibili.com/video/BV1") is True
+    )
+    judgements.append(
+        (
+            "能力位：抖音/本地无作者列表，B 站有",
+            ok,
+            f"douyin={supports_author('https://v.douyin.com/x/')} "
+            f"local={supports_author('C:/tmp/a.mp4')} "
+            f"bilibili={supports_author('https://www.bilibili.com/video/BV1')}",
+        )
+    )
+
+
+def check_author_listing(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
+    """`list_author` 的归一化：**只有拼得出可下载地址的条目才允许出现**。
+
+    用一个假的 yt-dlp（真跑 `--flat-playlist -J` 需要网络，判据不能依赖网络）
+    喂三种难处理的输入：
+    1. 正常的绝对 url
+    2. 只有 id、没有 url 的条目（必须按平台拼 `watch?v=`）
+    3. 嵌套播放列表（必须跳过，不能列成一条"视频"）
+    4. 既没 url 也拼不出的（必须丢弃，否则用户勾了却下不了）
+    """
+    import json
+    import shutil
+    import subprocess
+    import sys as _sys
+
+    from app.platforms.ytdlp import list_author_with_ytdlp
+
+    payload = {
+        "_type": "playlist",
+        "title": "示例频道",
+        "playlist_count": 4,
+        "entries": [
+            {"id": "aaa111", "url": "https://www.youtube.com/watch?v=aaa111", "title": "第一条", "duration": 61},
+            {"id": "bbb222", "title": "第二条（只有 id）", "duration": 62},
+            {"_type": "playlist", "id": "PLxxx", "title": "嵌套列表", "url": "https://x/PLxxx"},
+        ],
+    }
+    fake = Path(tmp) / "fake_ytdlp"
+    fake.mkdir(parents=True, exist_ok=True)
+    js = fake / "fake.py"
+    js.write_text(
+        "import sys, json\nprint(json.dumps(" + repr(payload) + "))\n",
+        encoding="utf-8",
+    )
+    bat = fake / "fake-yt-dlp.bat"
+    bat.write_text(
+        f'@echo off\r\n"{_sys.executable}" "{js}" %*\r\n',
+        encoding="ascii",
+    )
+
+    try:
+        page = list_author_with_ytdlp(
+            "https://www.youtube.com/@demo", "youtube", ytdlp_path=str(bat)
+        )
+    except Exception as exc:  # noqa: BLE001
+        judgements.append(
+            ("list_author 归一化（假 yt-dlp）", False, f"{type(exc).__name__}: {exc}")
+        )
+        return
+
+    urls = [i.url for i in page.items]
+    ok = (
+        len(page.items) == 2  # 正常 1 + 只有 id 1；嵌套那个被跳过
+        and "https://www.youtube.com/watch?v=aaa111" in urls
+        and "https://www.youtube.com/watch?v=bbb222" in urls  # 由 id 拼出
+        and page.title == "示例频道"
+    )
+    judgements.append(
+        (
+            "list_author 归一化：拼地址 / 跳嵌套 / 丢无地址",
+            ok,
+            f"{len(page.items)} 条 {urls}",
+        )
+    )
+
+    # limit 生效且 `truncated` 如实上报（UI 要显示"还有更多"）
+    page2 = list_author_with_ytdlp(
+        "https://www.youtube.com/@demo", "youtube", ytdlp_path=str(bat), limit=1
+    )
+    judgements.append(
+        (
+            "list_author 的 limit 与 truncated",
+            len(page2.items) == 1 and page2.truncated is True,
+            f"条数={len(page2.items)} truncated={page2.truncated}",
+        )
+    )
+
+
 def check_version_consistency(judgements: list[tuple[str, bool, str]]) -> None:
     """5 处版本号必须一致（VERSION / tauri.conf / package.json / Cargo.toml / rpc.py）。
 
@@ -790,6 +918,8 @@ def main() -> int:
     check_default_dirs(tmp, host.judgements)
     check_model_dir_detect(tmp, host.judgements)
     check_version_consistency(host.judgements)
+    check_platform_registry(host.judgements)
+    check_author_listing(tmp, host.judgements)
 
     run_eof_flow(env, host.judgements)
 

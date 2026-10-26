@@ -40,6 +40,12 @@ URL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
             r"https?://(?:www\.)?(?:youtube\.com/(?:watch\?v=|shorts/)|youtu\.be/)"
             r"[A-Za-z0-9_\-]+",
         ),
+        (
+            # X（原 Twitter）。yt-dlp 对 twitter/x 都支持，所以只需识别、不需要专用实现。
+            # 注意 `x.com` 与 `twitter.com` 是同一站点，别只写一个。
+            "twitter",
+            r"https?://(?:www\.)?(?:twitter\.com|x\.com)/[A-Za-z0-9_]+/status/\d+",
+        ),
     )
 )
 
