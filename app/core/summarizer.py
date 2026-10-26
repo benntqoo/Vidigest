@@ -19,19 +19,27 @@
 
 ## 走哪家模型
 
-`base_url` + `model` 都是配置项，任何 OpenAI 兼容服务都能用：
-- DeepSeek：`https://api.deepseek.com/v1` + `deepseek-chat`
-- 通义/千问：`https://dashscope.aliyuncs.com/compatible-mode/v1` + `qwen-plus`
-- 本地 Ollama：`http://127.0.0.1:11434/v1` + `qwen2.5:14b`
-密钥只从环境变量读（`api_key_env`，默认 `VIDIGEST_API_KEY`），**不落配置文件**。
+**不在这里决定** —— 由 `app/core/ai_backend.py` 统一选：本地 llama-server 优先，
+起不来才回退云端。所以下面这两条路对本模块是同一条：
+
+- 本地：`local_ai.enabled=true` + `<模型目录>/qwen3-vl-2b/` 里有 GGUF
+- 云端：`summarize.base_url` + 环境变量里的密钥（`api_key_env`，默认 `VIDIGEST_API_KEY`）
+
+密钥只从环境变量读，**不落配置文件**。都不满足时 `summarize()` 返回 None 并
+把**具体原因**写进日志（是「本地没启用」还是「缺哪个变量」，不能只说「没配置」）。
+
+## 画面材料
+
+`visual.md`（由 `vision.py` 产出）作为附加材料拼进提示词。它不是必选项，
+没有就退化成纯文本汇总 —— 两条路径共用同一份模板，靠 `{visual}` 占位符的空值区分。
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 from pathlib import Path
+
+from app.core import ai_backend
 
 #: 单次请求的最大字符数。4.8 万字符 ≈ 2.4 万 token —— 20 分钟的稿子（~2.5 万字）
 #: 正好一次吃完，省掉 map-reduce 的三次调用。超过就走分块（每块 1.2 万字）。
@@ -40,6 +48,11 @@ MAX_CHARS = 48000
 
 #: 每块的字符数（分块摘要时用），比 MAX_CHARS 小，好让每块都有产出余量。
 CHUNK_CHARS = 12000
+
+#: 本地小模型的重复惩罚。2B 在长中文输出上会重复到占满 token 上限
+#: （实测连出 60 多个 `→`），1.15 足以压住。云端不加这个字段 ——
+#: 部分服务不认它，会直接 400。
+_LOCAL_PENALTY = 1.15
 
 SYSTEM_PROMPT = (
     "你是视频内容编辑，擅长把口语化的转写稿整理成结构化的阅读材料。"
@@ -66,7 +79,7 @@ ONE_SHOT_TEMPLATE = """下面是视频《{title}》的转写稿（共 {duration}
 ## 适合谁看
 （1-2 句，说清什么人看了有用、什么人可以跳过）
 
----
+{visual}---
 转写稿：
 
 {transcript}
@@ -96,33 +109,27 @@ REDUCE_TEMPLATE = """下面是视频《{title}》按时间顺序的分段摘要�
 ## 适合谁看
 （1-2 句）
 
----
+{visual}---
 分段摘要：
 
 {chunks}
 """
 
 
-def api_key(cfg: object) -> str:
-    """从环境变量取密钥。**永远不从配置文件读** —— 那是约定（见 IPC 规格 §3.2）。"""
-    env_name = getattr(getattr(cfg, "summarize", None), "api_key_env", "") or "VIDIGEST_API_KEY"
-    return (os.environ.get(env_name) or "").strip()
-
-
 def skip_reason(cfg: object) -> str | None:
-    """返回「为什么这次不汇总」；`None` 表示可以汇总。
+    """返回「开关层为什么不让汇总」；`None` 表示开关是开的。
 
-    分开返回原因而不是一个布尔：日志里要能说清是"没开"还是"没配 key"，
-    否则用户会反复确认自己到底开没开。
+    ⚠️ 2026-10-27 改：**不再在这里检查密钥**。本地模型可用时没有密钥也能汇总，
+    「到底有没有后端」由 `ai_backend.resolve()` 判断。
+
+    把两件事分开是因为处置方式不同：开关关着是用户的意图（静默跳过即可）；
+    没有后端是配置问题（必须把缺什么写清楚，否则用户会反复确认自己开没开）。
     """
     sm = getattr(cfg, "summarize", None)
     if sm is None:
         return "配置里没有 summarize 段"
     if not getattr(sm, "enabled", False):
         return "汇总未启用（设置 → 汇总 → 启用）"
-    if not api_key(cfg):
-        env_name = getattr(sm, "api_key_env", None) or "VIDIGEST_API_KEY"
-        return f"环境变量 {env_name} 为空（密钥只从环境变量读）"
     return None
 
 
@@ -153,46 +160,60 @@ def split_chunks(text: str, chunk_chars: int = CHUNK_CHARS) -> list[str]:
     return chunks
 
 
-def build_payload(
-    cfg: object, messages: list[dict[str, str]], max_tokens: int = 2000
-) -> dict:
-    """构造请求体。抽成纯函数，方便判据离线检查（模型名/温度/消息结构）。"""
-    sm = getattr(cfg, "summarize", None)
-    return {
-        "model": getattr(sm, "model", "gpt-4o"),
-        "messages": messages,
-        "temperature": 0.3,
-        "max_tokens": max_tokens,
-    }
+# 请求体的构造与发送已下沉到 `ai_backend.chat()` —— 本地与云端共用同一份，
+# 避免出现「云端加了 temperature、本地漏了」这种只在一条路径上复现的漂移。
+# 这里不再保留 `build_payload` / `_post`：判据改测 `ai_backend.resolve()` 的选路结果，
+# 那才是现在真正决定「用谁、用什么模型」的地方。
 
 
-def _post(cfg: object, messages: list[dict[str, str]], timeout: int = 180) -> str:
-    """调一次 chat/completions，返回正文文本。异常向上抛，由调用方决定怎么处理。"""
-    import requests
+def _strip_fence(text: str) -> str:
+    """剥掉模型自作主张加上的**外层**代码围栏。
 
-    sm = getattr(cfg, "summarize", None)
-    base = (getattr(sm, "base_url", "") or "https://api.openai.com/v1").rstrip("/")
-    url = f"{base}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key(cfg)}",
-        "Content-Type": "application/json",
-    }
-    resp = requests.post(
-        url, headers=headers, json=build_payload(cfg, messages), timeout=timeout
-    )
-    if resp.status_code != 200:
-        # 把服务端的错误信息带出来：401 / 402 / 404 的处理方式完全不同
-        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
-    data = resp.json()
-    try:
-        return str(data["choices"][0]["message"]["content"]).strip()
-    except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"响应结构不认识：{json.dumps(data, ensure_ascii=False)[:300]}") from exc
+    为什么需要：让模型「输出 Markdown」，相当一部分（实测本地 Qwen3-VL-2B 必犯）
+    会理解成「把 Markdown 包在 ```markdown 里」。原样落盘的话 `summary.md`
+    在渲染器里会整段变成一个灰色代码块，标题层级全失效。
+
+    两种形态都要处理：**闭合的**（结尾有 ```）和**没闭合的**（模型写到一半被
+    max_tokens 截断，只剩开头围栏）—— 后者实测更常见，只判闭合会漏掉。
+
+    只剥最外层：正文里真实的代码块不能被误伤，所以剥完若发现还夹着顶层围栏，
+    就还原成原文（那说明这是模型写了多段代码，不是「整份包起来」）。
+    """
+    t = text.strip()
+    if not t.startswith("```"):
+        return t
+    first_nl = t.find("\n")
+    if first_nl == -1:
+        return t
+    body = t[first_nl + 1 :].rstrip()
+    if body.endswith("```"):
+        body = body[:-3].rstrip()
+    if "\n```" in body:
+        return t
+    return body
 
 
 def _fmt_ts(seconds: float) -> str:
     total = int(seconds)
     return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def _visual_block(visual_text: str) -> str:
+    """把画面材料包成提示词里的一段。空串时返回空 —— 模板原样成立。
+
+    明确告诉模型「这份材料可能不全」：拼版图分辨率只有 320×180 一格，
+    小字会读不出。不提醒的话模型会把「没读到」当成「没有」，直接断言
+    「视频里没有任何图表」，而画面明明有。
+    """
+    text = (visual_text or "").strip()
+    if not text:
+        return ""
+    return (
+        "---\n"
+        "画面材料（从视频截图里读出来的，可能不完整、可能有误读，"
+        "只能作为转写稿的补充，不能取代替换）：\n\n"
+        f"{text}\n\n"
+    )
 
 
 def summarize(
@@ -202,12 +223,24 @@ def summarize(
     title: str = "",
     duration_sec: int = 0,
     on_progress=None,
+    visual_text: str = "",
 ) -> Path | None:
-    """生成 `summary.md`。**未配置返回 None（不算失败）**；调用方的异常处理见模块说明。"""
+    """生成 `summary.md`。**没有可用后端时返回 None（不算失败）**。
+
+    `visual_text` 是 `vision.describe_sheets()` 的产出（已去掉标题行）。
+    传空串就是纯文本汇总 —— 这是默认路径，画面理解是可选增强。
+    """
     reason = skip_reason(cfg)
     if reason:
         logging.info("跳过汇总：%s", reason)
         return None
+
+    backend, no_backend = ai_backend.resolve(cfg)
+    if backend is None:
+        # 这里不能只说「没配置」：用户需要知道是本地没启用、还是缺哪个环境变量
+        logging.info("跳过汇总：%s", no_backend)
+        return None
+    logging.info("汇总后端：%s", backend.describe())
 
     text = Path(transcript_path).read_text(encoding="utf-8", errors="replace").strip()
     if not text:
@@ -219,20 +252,30 @@ def summarize(
 
     duration = _fmt_ts(duration_sec) if duration_sec else "未知时长"
     lines = text.count("\n") + 1
+    visual = _visual_block(visual_text)
+    if visual:
+        logging.info("汇总：已并入画面材料（%d 字符）", len(visual_text))
 
     if len(text) <= MAX_CHARS:
         logging.info("汇总：单遍（%d 字符）", len(text))
-        body = _post(
-            cfg,
+        body = ai_backend.chat(
+            backend,
             [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": ONE_SHOT_TEMPLATE.format(
-                        title=title or "未命名", duration=duration, lines=lines, transcript=text
+                        title=title or "未命名",
+                        duration=duration,
+                        lines=lines,
+                        visual=visual,
+                        transcript=text,
                     ),
                 },
             ],
+            max_tokens=2000,
+            timeout=300 if backend.is_local else 180,
+            repeat_penalty=_LOCAL_PENALTY if backend.is_local else None,
         )
     else:
         chunks = split_chunks(text)
@@ -243,8 +286,8 @@ def summarize(
                 on_progress("summarizing", 0.15 + 0.7 * (i - 1) / len(chunks))
             try:
                 parts.append(
-                    _post(
-                        cfg,
+                    ai_backend.chat(
+                        backend,
                         [
                             {"role": "system", "content": SYSTEM_PROMPT},
                             {
@@ -260,14 +303,16 @@ def summarize(
                             },
                         ],
                         max_tokens=800,
+                        timeout=300 if backend.is_local else 180,
+                        repeat_penalty=_LOCAL_PENALTY if backend.is_local else None,
                     )
                 )
             except Exception as exc:  # noqa: BLE001 — 单块失败不该毁掉整份
                 logging.warning("第 %d/%d 块摘要失败：%s", i, len(chunks), exc)
         if not parts:
             raise RuntimeError("所有分块都失败了，没有可合并的内容")
-        body = _post(
-            cfg,
+        body = ai_backend.chat(
+            backend,
             [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
@@ -275,16 +320,24 @@ def summarize(
                     "content": REDUCE_TEMPLATE.format(
                         title=title or "未命名",
                         duration=duration,
+                        visual=visual,
                         chunks="\n\n".join(f"### 第 {i} 段\n{p}" for i, p in enumerate(parts, 1)),
                     ),
                 },
             ],
             max_tokens=2500,
+            timeout=300 if backend.is_local else 180,
+            repeat_penalty=_LOCAL_PENALTY if backend.is_local else None,
         )
 
     out = Path(out_dir) / "summary.md"
-    header = f"# {title or '视频总结'}\n\n> 时长 {duration} · 由 {getattr(cfg.summarize, 'model', '')} 生成\n\n"
-    out.write_text(header + body.strip() + "\n", encoding="utf-8")
+    header = (
+        f"# {title or '视频总结'}\n\n"
+        f"> 时长 {duration} · 由 {backend.describe()} 生成"
+        + ("（含画面材料）" if visual else "")
+        + "\n\n"
+    )
+    out.write_text(header + _strip_fence(body) + "\n", encoding="utf-8")
     if on_progress:
         on_progress("summarizing", 1.0)
     logging.info("汇总完成：%s（%d 字符）", out, len(body))

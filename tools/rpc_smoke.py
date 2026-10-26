@@ -942,23 +942,53 @@ def check_summarizer(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
     from app.core import summarizer as S
     from app.models.config import Config
 
-    # ---- 跳过条件三态 ----
+    # ---- 跳过条件：开关与后端是两件事（2026-10-27 改）----
+    #
+    # 旧判据要求「没密钥 → skip_reason 报错」。本地模型上线后这条**不再成立**：
+    # 没有云端密钥、但本地 GGUF 在，照样能汇总。所以判据拆成两半：
+    # 开关关着 → skip_reason 有话说；开关开着 → skip_reason 闭嘴，
+    # 「到底能不能调」交给 ai_backend.resolve()。
+    from app.core import ai_backend
+
     off = Config.from_dict({"summarize": {"enabled": False}}, root=Path(tmp))
     on_no_key = Config.from_dict({"summarize": {"enabled": True, "api_key_env": "VIDIGEST_NO_SUCH_KEY"}}, root=Path(tmp))
     import os as _os
+
     _os.environ["VIDIGEST_SMOKE_KEY"] = "sk-x"
     try:
         ready = Config.from_dict(
             {"summarize": {"enabled": True, "api_key_env": "VIDIGEST_SMOKE_KEY"}}, root=Path(tmp)
         )
         reasons = (S.skip_reason(off), S.skip_reason(on_no_key), S.skip_reason(ready))
+        no_key_backend, no_key_why = ai_backend.resolve(on_no_key)
+        ready_backend, _ = ai_backend.resolve(ready)
     finally:
         _os.environ.pop("VIDIGEST_SMOKE_KEY", None)
     judgements.append(
         (
-            "汇总跳过条件：未启用 / 无密钥 / 可运行（三态可区分）",
-            "未启用" in (reasons[0] or "") and "为空" in (reasons[1] or "") and reasons[2] is None,
-            f"{reasons}",
+            "汇总开关：关着报「未启用」，开着不再因缺密钥而跳过（本地可接管）",
+            "未启用" in (reasons[0] or "")
+            and reasons[1] is None
+            and reasons[2] is None,
+            f"skip_reason={reasons}",
+        )
+    )
+    judgements.append(
+        (
+            "选路：本地关 + 无密钥 → 无后端，且原因同时点出两边缺什么",
+            no_key_backend is None
+            and "本地模型未启用" in no_key_why
+            and "为空" in no_key_why,
+            f"{no_key_why}",
+        )
+    )
+    judgements.append(
+        (
+            "选路：有密钥时走 cloud，model 取自配置",
+            ready_backend is not None
+            and ready_backend.name == "cloud"
+            and ready_backend.model == ready.summarize.model,
+            f"{ready_backend}",
         )
     )
 
@@ -977,16 +1007,31 @@ def check_summarizer(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
         )
     )
 
-    # ---- 请求体：模型名/温度/消息结构 ----
-    cfg2 = Config.from_dict(
-        {"summarize": {"enabled": True, "model": "deepseek-chat", "api_key_env": "V"}}, root=Path(tmp)
+    # ---- 代码围栏：本地模型会把整份 Markdown 包进 ```markdown ----
+    #
+    # 这不是洁癖：原样落盘的话 summary.md 在渲染器里整段变成灰色代码块，
+    # 标题层级全失效，用户看到的是「一堆带 ``` 的原文」。
+    fenced_closed = "```markdown\n## 结论\n内容\n```"
+    fenced_open = "```markdown\n## 结论\n内容"          # 被 max_tokens 截断，结尾没闭合
+    plain = "## 结论\n内容"
+    has_code = "## 结论\n```python\nprint(1)\n```\n结束"
+    stripped = (
+        S._strip_fence(fenced_closed),
+        S._strip_fence(fenced_open),
+        S._strip_fence(plain),
+        S._strip_fence(has_code),
     )
-    body = S.build_payload(cfg2, [{"role": "user", "content": "hi"}])
     judgements.append(
         (
-            "汇总请求体：model 取自配置、含 messages",
-            body.get("model") == "deepseek-chat" and isinstance(body.get("messages"), list),
-            f"model={body.get('model')} temperature={body.get('temperature')}",
+            "汇总产物：剥掉外层代码围栏（闭合与未闭合都要剥），正文代码块不动",
+            stripped[0].startswith("## 结论")
+            and "```" not in stripped[0]
+            and stripped[1].startswith("## 结论")
+            and "```" not in stripped[1]
+            and stripped[2] == plain
+            and stripped[3] == has_code,
+            f"closed={stripped[0][:12]!r} open={stripped[1][:12]!r} "
+            f"plain_ok={stripped[2] == plain} code_intact={stripped[3] == has_code}",
         )
     )
 
@@ -1018,6 +1063,99 @@ def check_summarizer(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
         )
     finally:
         store.close()
+
+
+def check_ai_backend(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
+    """本地优先 / 云兜底 / 画面理解降级。
+
+    这三条守的是同一件事：**AI 能力是增强，不是主链路**。
+    任何一个环节坏掉，转写稿照样要在、任务照样要 `done`。
+    """
+    import os
+
+    from app.core import ai_backend, vision
+    from app.models.config import Config
+
+    # ---- 本地起不来 → 回退云端，而不是直接没有后端 ----
+    vdir = Path(tmp) / "vlm"
+    vdir.mkdir(parents=True, exist_ok=True)
+    (vdir / "Qwen3-VL-2B-Instruct-Q4_K_M.gguf").write_bytes(b"x")
+    (vdir / "mmproj-BF16.gguf").write_bytes(b"x")
+    fake_server = Path(tmp) / ("fake-llama-server.exe" if os.name == "nt" else "fake-llama-server")
+    fake_server.write_bytes(b"this is not a runnable binary")
+
+    os.environ["VIDIGEST_AI_KEY"] = "sk-x"
+    try:
+        cfg = Config.from_dict(
+            {
+                "local_ai": {
+                    "enabled": True,
+                    "server_path": str(fake_server),
+                    "model_dir": str(vdir),
+                    "startup_timeout": 1.0,
+                    "port": 8123,
+                },
+                "summarize": {
+                    "enabled": True,
+                    "api_key_env": "VIDIGEST_AI_KEY",
+                    "model": "fallback-model",
+                },
+            },
+            root=Path(tmp),
+        )
+        backend, why = ai_backend.resolve(cfg)
+    finally:
+        os.environ.pop("VIDIGEST_AI_KEY", None)
+
+    judgements.append(
+        (
+            "本地优先：本地起不来时回退云端（不是直接判定无后端）",
+            backend is not None and backend.name == "cloud" and backend.model == "fallback-model",
+            f"backend={backend} local_reason={why!r}",
+        )
+    )
+
+    # ---- 诊断信息：只报状态，不拉起进程 ----
+    # 为什么单列一条：如果 describe() 顺手启动了 llama-server，那么「打开设置页」
+    # 就会吃掉 3 GiB 显存，而用户可能只是想看一眼开关在哪。
+    info = ai_backend.describe(cfg)
+    judgements.append(
+        (
+            "后端诊断：文件齐备时报 local，但不启动进程",
+            info["local_ready"] is True
+            and info["local_running"] is False
+            and info["active"] == "local",
+            f"ready={info['local_ready']} running={info['local_running']} active={info['active']}",
+        )
+    )
+
+    # ---- 拼版图时间范围来自索引，不由模型猜 ----
+    index = Path(tmp) / "sheets" / "frames_index.json"
+    index.parent.mkdir(parents=True, exist_ok=True)
+    frames = [{"file": f"frame_{i + 1:04d}.jpg", "t": i * 10.0, "time": f"{(i * 10) // 60:02d}:{(i * 10) % 60:02d}"} for i in range(48)]
+    index.write_text(json.dumps({"sheets": ["sheet_01.jpg", "sheet_02.jpg"], "frames": frames}), encoding="utf-8")
+    spans = vision._sheet_spans(index, 2)
+    judgements.append(
+        (
+            "画面理解：每张拼版图的时间范围由索引算出（48 帧 → 2 张各 24 帧）",
+            len(spans) == 2
+            and spans[0][0] == "00:00"
+            and spans[0][2] == 24
+            and spans[1][2] == 24
+            and spans[1][0] == "04:00",
+            f"{spans[0][:2]} 格数{spans[0][2]} / {spans[1][:2]} 格数{spans[1][2]}",
+        )
+    )
+
+    # ---- 索引缺失时降级，不抛错 ----
+    degraded = vision._sheet_spans(Path(tmp) / "no-such-index.json", 2)
+    judgements.append(
+        (
+            "画面理解：索引缺失时降级为「未知时间范围」，不抛错",
+            len(degraded) == 2 and degraded[0][0] == "未知" and degraded[0][2] == 24,
+            f"{degraded}",
+        )
+    )
 
 
 def check_version_consistency(judgements: list[tuple[str, bool, str]]) -> None:
@@ -1062,6 +1200,7 @@ def main() -> int:
     check_platform_registry(host.judgements)
     check_download_dispatch(tmp, host.judgements)
     check_summarizer(tmp, host.judgements)
+    check_ai_backend(tmp, host.judgements)
     check_author_listing(tmp, host.judgements)
 
     run_eof_flow(env, host.judgements)

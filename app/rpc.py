@@ -32,6 +32,7 @@ from dataclasses import asdict, fields as dataclass_fields
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
+from app.core import ai_backend
 from app.core import concurrency as concurrency_mod
 from app.core import env_probe
 from app.core import model_downloader
@@ -50,7 +51,7 @@ from app.models.config import (
 from app.models.task import Task, TaskStatus
 
 PROTOCOL_VERSION = 1
-SERVER_VERSION = "0.5.0"
+SERVER_VERSION = "0.6.0"
 
 #: 内部事件名 → 协议事件名。
 #: 调度器不感知协议，它只报「发生了什么」；名字翻译在这里做，与 `STAGE_LABELS` 同理。
@@ -88,6 +89,8 @@ EDITABLE_SECTIONS: tuple[str, ...] = (
     "transcribe",
     "frames",
     "summarize",
+    "local_ai",
+    "vision",
     "download",
 )
 
@@ -290,6 +293,10 @@ class Worker:
                 break
             self._dispatch(frame)
 
+        # 停掉本进程拉起的 llama-server。强杀 worker 时这里不会执行，
+        # 但那次的残留进程会被下次启动的 `reuse_running` 直接复用
+        # （固定端口的用途之一），所以最多多占一次显存，不会冲突。
+        ai_backend.shutdown()
         self.store.close()
         return 0
 
@@ -803,6 +810,10 @@ class Worker:
             "work_dir_exists": Path(cfg.paths.work_dir).is_dir(),
             "api_key_env": api_key_env,
             "api_key_present": bool(os.environ.get(api_key_env)),
+            # 「现在会用哪个后端」的诊断。**不启动任何进程** —— 只是看文件在不在、
+            # 端口通不通，界面据此显示「本地模型 / 云端 / 都没有」。
+            # 不在启动时真起 llama-server：有用户根本不看画面，不该替他付 3 GiB 显存。
+            "ai": ai_backend.describe(cfg),
             "pipeline_state": self.dispatcher.state.value,
             "download": self._downloader.status() if self._downloader else {"running": False},
         }

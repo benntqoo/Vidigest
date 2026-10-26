@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.core import audio as audio_mod
+from app.core import ai_backend, vision as vision_mod
 from app.core import fetcher, frames as frames_mod, summarizer as summary_mod, transcriber
 from app.core.errors import (
     FatalEnvironmentError,
@@ -289,8 +290,12 @@ def run_summarize(
 ) -> None:
     """汇总：`framed → summarizing → done`。**本阶段是唯一置 `done` 的地方。**
 
-    未配置（没启用 / 没设密钥）时**直接跳过并置 done** —— 转写稿本身已经有价值，
-    不该因为它把任务卡在 `framed` 上。跳过原因写日志，用户能查到。
+    两步，都可有可无：
+    1. **画面理解**（`vision.enabled`）：拼版图 → `visual.md`
+    2. **汇总**（`summarize.enabled`）：转写稿（+ 画面材料）→ `summary.md`
+
+    两步都失败也要置 `done` —— 转写稿本身已经有价值，AI 能力不该让它变红。
+    跳过原因写日志，用户能查到（这是本项目反复踩过的坑：静默跳过等于看起来没干活）。
     """
     if not task.transcript_path:
         logging.warning("任务 %s 无转写稿，跳过汇总", task.id)
@@ -298,17 +303,44 @@ def run_summarize(
         return
 
     _set(task, store, TaskStatus.SUMMARIZING, on_stage)
+    out_dir = Path(task.out_dir)  # type: ignore[arg-type]
+    visual_text = ""
     try:
-        out = summary_mod.summarize(
-            Path(task.transcript_path),
-            Path(task.out_dir),  # type: ignore[arg-type]
-            cfg,
-            title=task.title or "",
-            duration_sec=task.duration_sec or 0,
-            on_progress=on_progress,
-        )
-        if out is not None:
-            logging.info("任务 %s 汇总产物：%s", task.id, out)
+        # 先解析一次后端：没有后端时两条路都做不了，不必各试一遍（本地启动要 2.6 s）
+        backend, why = ai_backend.resolve(cfg)
+        if backend is None:
+            logging.info("任务 %s 无可用 AI 后端，跳过画面理解与汇总：%s", task.id, why)
+        else:
+            if cfg.vision.enabled:
+                try:
+                    produced = vision_mod.describe_sheets(
+                        out_dir,
+                        cfg,
+                        backend,
+                        title=task.title or "",
+                        on_progress=on_progress,
+                        cancel_event=cancel_event,
+                    )
+                    if produced is not None:
+                        visual_text = vision_mod.load_visual(out_dir)
+                except TaskCancelled:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — 画面是增强，不该毁掉汇总
+                    logging.warning(
+                        "任务 %s 画面理解失败（已跳过）：%s: %s", task.id, type(exc).__name__, exc
+                    )
+
+            out = summary_mod.summarize(
+                Path(task.transcript_path),
+                out_dir,
+                cfg,
+                title=task.title or "",
+                duration_sec=task.duration_sec or 0,
+                on_progress=on_progress,
+                visual_text=visual_text,
+            )
+            if out is not None:
+                logging.info("任务 %s 汇总产物：%s", task.id, out)
     except TaskCancelled:
         raise
     except Exception as exc:  # noqa: BLE001

@@ -211,6 +211,25 @@ export interface AppConfig {
     model: string;
     template: string;
   };
+  /**
+   * 本机 llama-server（GGUF）。**本地优先，云 API 兜底**的底座。
+   * `enabled` 的含义是「允许用本地模型」，不是「只用本地」—— 起不来会回退云端。
+   */
+  local_ai: {
+    enabled: boolean;
+    server_path: string | null;
+    model_dir: string | null;
+    port: number;
+    gpu_layers: number;
+    startup_timeout: number;
+    reuse_running: boolean;
+  };
+  /** 画面理解：拼版图 → visual.md。独立于 frames（有没有图 vs 要不要让模型看图）。 */
+  vision: {
+    enabled: boolean;
+    max_sheets: number;
+    max_tokens: number;
+  };
   download: {
     rate_limit_per_min: number;
     keep_intermediate: boolean;
@@ -239,6 +258,20 @@ export interface ConfigInfo {
   work_dir_exists: boolean;
   api_key_env: string;
   api_key_present: boolean;
+  /** 「现在会用哪个 AI 后端」的诊断。**后端只是探测，不会为了显示而启动进程。** */
+  ai: {
+    local_enabled: boolean;
+    /** 文件层面齐备（server + 权重），不代表已经验证能跑 */
+    local_ready: boolean;
+    local_server: string | null;
+    local_model: string | null;
+    local_mmproj: string | null;
+    local_model_dir: string;
+    /** 端口上已有健康服务在跑 */
+    local_running: boolean;
+    cloud_key_present: boolean;
+    active: "local" | "cloud" | "none";
+  };
   pipeline_state: PipelineState;
   download: { running?: boolean };
 }

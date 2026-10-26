@@ -19,7 +19,7 @@ import type {
   PipelineState,
 } from "../worker/types";
 import { ModelPanel } from "./ModelPanel";
-import { pickDirectory } from "../worker/pickDir";
+import { pickDirectory, pickFile } from "../worker/pickDir";
 
 interface Props {
   info: ConfigInfo | null;
@@ -154,6 +154,12 @@ export function SettingsDialog({
     k: K,
     v: AppConfig["summarize"][K],
   ) => setDraft((d) => (d ? { ...d, summarize: { ...d.summarize, [k]: v } } : d));
+  const setLocalAI = <K extends keyof AppConfig["local_ai"]>(
+    k: K,
+    v: AppConfig["local_ai"][K],
+  ) => setDraft((d) => (d ? { ...d, local_ai: { ...d.local_ai, [k]: v } } : d));
+  const setVision = <K extends keyof AppConfig["vision"]>(k: K, v: AppConfig["vision"][K]) =>
+    setDraft((d) => (d ? { ...d, vision: { ...d.vision, [k]: v } } : d));
   const setDownload = <K extends keyof AppConfig["download"]>(
     k: K,
     v: AppConfig["download"][K],
@@ -522,8 +528,22 @@ export function SettingsDialog({
                 disabled={readOnly}
                 onChange={(e) => setSummarize("enabled", e.target.checked)}
               />
-              <span>启用 LLM 汇总（走 OpenAI 兼容接口）</span>
+              <span>启用汇总（本地模型优先，本地不可用时才走下面的云接口）</span>
             </label>
+            <p className="settings-hint">
+              当前会用：{" "}
+              {info.ai.active === "local" ? (
+                <span className="chip chip-ok">本地模型</span>
+              ) : info.ai.active === "cloud" ? (
+                <span className="chip chip-ok">云接口</span>
+              ) : (
+                <span className="chip chip-warn">没有可用后端</span>
+              )}
+              {info.ai.active === "local" && !info.ai.local_running
+                ? " —— 首次汇总时会自动拉起，约需数秒加载模型"
+                : ""}
+              {info.ai.active === "none" ? " —— 打开下面的「本地模型」，或给云端配好密钥" : ""}
+            </p>
             <label className="field">
               <span className="field-label">接口地址</span>
               <input
@@ -571,6 +591,156 @@ export function SettingsDialog({
                 onChange={(e) => setSummarize("template", e.target.value)}
               />
             </label>
+          </section>
+
+          <section className="settings-section">
+            <h3>本地模型（可选）</h3>
+            <label className="field field-inline">
+              <input
+                type="checkbox"
+                checked={draft.local_ai.enabled}
+                disabled={readOnly}
+                onChange={(e) => setLocalAI("enabled", e.target.checked)}
+              />
+              <span>启用本地推理（llama-server + GGUF），优先于云端且不产生费用</span>
+            </label>
+            <p className="settings-hint">
+              {info.ai.local_ready ? (
+                <span className="chip chip-ok">服务与权重已就位</span>
+              ) : (
+                <span className="chip chip-warn">缺少 llama-server 或模型权重</span>
+              )}
+              {info.ai.local_running ? (
+                <span className="chip chip-ok"> 服务运行中</span>
+              ) : null}
+              <br />
+              需要两样东西：`llama-server.exe`（llama.cpp 官方发布包）和
+              Qwen3-VL-2B 的 GGUF 权重（约 1.8 GB，放
+              <code> {info.ai.local_model_dir} </code>）。
+              起不来时**自动回退**上面的云接口，不会让任务失败。
+            </p>
+            <label className="field">
+              <span className="field-label">
+                llama-server 路径
+                <em className="field-hint">留空则在上面那个目录下的 llama/ 里查找</em>
+              </span>
+              <div className="field-row">
+                <input
+                  value={draft.local_ai.server_path ?? ""}
+                  disabled={readOnly}
+                  placeholder="留空自动查找"
+                  onChange={(e) => setLocalAI("server_path", e.target.value || null)}
+                />
+                <button
+                  type="button"
+                  disabled={readOnly}
+                  onClick={async () => {
+                    const picked = await pickFile(
+                      draft.local_ai.server_path ?? undefined,
+                      "选择 llama-server",
+                      [{ name: "可执行文件", extensions: ["exe"] }],
+                    );
+                    if (picked) setLocalAI("server_path", picked);
+                  }}
+                >
+                  浏览…
+                </button>
+              </div>
+            </label>
+            <label className="field">
+              <span className="field-label">
+                视觉模型目录
+                <em className="field-hint">留空则用 &lt;模型目录&gt;/qwen3-vl-2b</em>
+              </span>
+              <div className="field-row">
+                <input
+                  value={draft.local_ai.model_dir ?? ""}
+                  disabled={readOnly}
+                  placeholder="留空用默认位置"
+                  onChange={(e) => setLocalAI("model_dir", e.target.value || null)}
+                />
+                <button
+                  type="button"
+                  disabled={readOnly}
+                  onClick={async () => {
+                    const picked = await pickDirectory(
+                      draft.local_ai.model_dir ?? draft.paths.model_dir,
+                      "选择视觉模型目录",
+                    );
+                    if (picked) setLocalAI("model_dir", picked);
+                  }}
+                >
+                  浏览…
+                </button>
+              </div>
+            </label>
+            <div className="field-row">
+              <label className="field">
+                <span className="field-label">端口</span>
+                <input
+                  type="number"
+                  value={draft.local_ai.port}
+                  disabled={readOnly}
+                  onChange={(e) => setLocalAI("port", num(e.target.value))}
+                />
+              </label>
+              <label className="field">
+                <span className="field-label">
+                  GPU 层数
+                  <em className="field-hint">99 = 全部卸载到显卡</em>
+                </span>
+                <input
+                  type="number"
+                  value={draft.local_ai.gpu_layers}
+                  disabled={readOnly}
+                  onChange={(e) => setLocalAI("gpu_layers", num(e.target.value))}
+                />
+              </label>
+            </div>
+          </section>
+
+          <section className="settings-section">
+            <h3>画面理解（可选）</h3>
+            <label className="field field-inline">
+              <input
+                type="checkbox"
+                checked={draft.vision.enabled}
+                disabled={readOnly}
+                onChange={(e) => setVision("enabled", e.target.checked)}
+              />
+              <span>让模型读拼版图，产出 visual.md 并并入汇总</span>
+            </label>
+            <p className="settings-hint">
+              需要先开「抽帧」才有图。产出的画面描述会作为补充材料送进汇总 ——
+              于是总结里能出现转写稿没有、但画面上写着的数字。
+              本机实测约 1.8 秒/张。
+            </p>
+            <div className="field-row">
+              <label className="field">
+                <span className="field-label">
+                  最多看几张拼版图
+                  <em className="field-hint">每张含 24 格画面</em>
+                </span>
+                <input
+                  type="number"
+                  value={draft.vision.max_sheets}
+                  disabled={readOnly}
+                  onChange={(e) => setVision("max_sheets", num(e.target.value))}
+                />
+              </label>
+              <label className="field">
+                <span className="field-label">
+                  单张生成上限（token）
+                  <em className="field-hint">太小会截断 OCR 结果</em>
+                </span>
+                <input
+                  type="number"
+                  value={draft.vision.max_tokens}
+                  disabled={readOnly}
+                  onChange={(e) => setVision("max_tokens", num(e.target.value))}
+                />
+              </label>
+            </div>
           </section>
 
           <section className="settings-section">

@@ -29,6 +29,7 @@ models/*
 cookies.txt
 state.json
 scene_log.txt
+vlm_probe_report.json
 
 # samples/ 下的基线**默认纳入版本控制**——
 # 2026-10-02 因本仓库为 GitHub 公开仓库而撤销此策略，见文件末尾「第三方素材」一节。

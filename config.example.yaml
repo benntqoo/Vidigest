@@ -44,12 +44,35 @@ frames:
   sheet_rows: 4
 
 summarize:
-  enabled: false            # true 才调用 API；默认关闭以保证离线可用
+  enabled: false            # true 才生成总结；默认关闭以保证离线可用
   base_url: "https://api.openai.com/v1"
   # 密钥不进本文件，走环境变量
   api_key_env: "VIDIGEST_API_KEY"
   model: "gpt-4o"
   template: "摘要+章节大纲+要点"
+
+# 本地模型推理（llama-server + GGUF）。「本地优先，云 API 兜底」的底座。
+# enabled: true 表示**允许**用本地模型，不是「只用本地」——
+# 本地起不来时会自动回退到上面 summarize.base_url。要彻底离线就把 base_url 留空。
+# 实测（2026-10-27，RTX 4060 Ti 16G）：Qwen3-VL-2B Q4 每张拼版图 1.8 秒，
+# 显存 3.2 GiB，可与 faster-whisper 共存。详见 docs/实测记录.md §8。
+local_ai:
+  enabled: false
+  # llama-server(.exe) 的完整路径；null = 在 <模型目录>/llama/ 下按名字找
+  server_path: null
+  # GGUF 权重目录；null = <paths.model_dir>/qwen3-vl-2b
+  model_dir: null
+  port: 8099                # 固定端口：上次残留的 server 可直接复用，省掉 2.6 秒加载
+  gpu_layers: 99            # 99 = 全量卸载到 GPU
+  startup_timeout: 120.0
+  reuse_running: true
+
+# 画面理解：把拼版图交给视觉模型读，产出 visual.md。
+# 独立于 frames：frames 决定「有没有图」，这条决定「要不要让模型看图」。
+vision:
+  enabled: false
+  max_sheets: 6             # 最多看几张拼版图（每张 24 格）
+  max_tokens: 400           # 单张图生成上限；太小会截断 OCR
 
 cookie:
   browser: "chromium"       # playwright 取 cookie 用的浏览器

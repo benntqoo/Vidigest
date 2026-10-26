@@ -269,14 +269,86 @@ class FramesConfig:
 
 
 @dataclass
+class VisionConfig:
+    """画面理解（可选）：把拼版图交给视觉模型读，产出 `visual.md`。
+
+    默认关闭 —— 它要么依赖本机的视觉模型（`local_ai`），要么依赖云端的多模态
+    接口，两者都不是「装完就有」的。关掉后仍是完整可用的转写工具（PRD NFR-4）。
+
+    为什么不复用 `frames` 的开关：抽帧是「要不要这些图片」，画面理解是
+    「要不要让模型看图」。前者是产物，后者是行为，混在一个开关里会让
+    「我只想要缩略图」的用户被迫去看模型脸色。
+    """
+
+    enabled: bool = False
+    #: 最多看几张拼版图。每条视频通常 3~6 张（每张 24 格），全看会线性加耗时
+    #: （本机实测约 1.8 s/张；云端按 token 计费，一张 ≈1500 prompt token）。
+    max_sheets: int = 6
+    #: 单张图允许生成的 token 上限。太小会把 OCR 结果截断，太大则 2B 容易跑飞。
+    max_tokens: int = 400
+
+
+@dataclass
 class SummarizeConfig:
-    """汇总（可选，走 API）。密钥不进配置文件，只留环境变量名。"""
+    """汇总（可选，走 OpenAI 兼容接口）。密钥不进配置文件，只留环境变量名。
+
+    后端由 `app/core/ai_backend.py` 决定：本地 `llama-server` 优先，起不来时
+    回退到这里的 `base_url`（云 API）。所以「填了 base_url 却没有 key」不再是
+    死路 —— 只要本地模型在，汇总照样能出。
+    """
 
     enabled: bool = False
     base_url: str = "https://api.openai.com/v1"
     api_key_env: str = "VIDIGEST_API_KEY"
     model: str = "gpt-4o"
     template: str = "摘要+章节大纲+要点"
+
+
+@dataclass
+class LocalAIConfig:
+    """本机 llama-server（GGUF 推理）—— 「本地优先、云 API 兜底」的底座。
+
+    为什么是 llama-server 而不是 transformers（2026-10-27 实测，见
+    `docs/实测记录.md` §8）：同一个 Qwen3-VL-2B，CPU + torch 要 **45 s/张**，
+    GGUF Q4 + llama.cpp 在 4060 Ti 上 **1.8 s/张**、显存 3.2 GiB。差 25 倍。
+    更重要的是 llama-server 直接暴露 `/v1/chat/completions`，
+    于是云端与本地在代码上是同一条路，只差一个 `base_url`。
+
+    `enabled=True` 的含义是「**允许**用本地模型」，不是「只用本地」：
+    本地起不来时自动回退到 `summarize.base_url`。要彻底离线，
+    把云端的 base_url 留空、只开这一段即可。
+    """
+
+    enabled: bool = False
+    #: llama-server(.exe) 的完整路径。None = 在 `<模型目录>/llama/` 下按名字找。
+    server_path: str | None = None
+    #: 存 GGUF 的目录。None = `<paths.model_dir>/qwen3-vl-2b`。
+    model_dir: str | None = None
+    #: 监听端口。**固定端口**是有意的：上次异常退出残留的 server 能直接复用，
+    #: 不必每次重付 2.6 s 的模型加载。
+    port: int = 8099
+    #: 卸载到 GPU 的层数。99 = 全量（2B Q4 实测只需约 3.2 GiB 显存）。
+    gpu_layers: int = 99
+    #: 等待模型加载的上限（秒）。冷启动实测 2.6 s，给足余量防慢盘 / 杀软扫描。
+    startup_timeout: float = 120.0
+    #: 端口上已有健康的 llama-server 就复用（可能是上次残留的进程）。
+    reuse_running: bool = True
+
+    def resolve(self, root: Path) -> LocalAIConfig:
+        """把相对路径锚定到项目根。逐字段重建 —— 新增字段必须一起带过来。"""
+        server = Path(self.server_path).expanduser() if self.server_path else None
+        mdir = Path(self.model_dir).expanduser() if self.model_dir else None
+        return LocalAIConfig(
+            enabled=self.enabled,
+            server_path=str(server if server and server.is_absolute() else root / server)
+            if server
+            else None,
+            model_dir=str(mdir if mdir and mdir.is_absolute() else root / mdir) if mdir else None,
+            port=self.port,
+            gpu_layers=self.gpu_layers,
+            startup_timeout=self.startup_timeout,
+            reuse_running=self.reuse_running,
+        )
 
 
 @dataclass
@@ -306,6 +378,8 @@ class Config:
     transcribe: TranscribeConfig = field(default_factory=TranscribeConfig)
     frames: FramesConfig = field(default_factory=FramesConfig)
     summarize: SummarizeConfig = field(default_factory=SummarizeConfig)
+    local_ai: LocalAIConfig = field(default_factory=LocalAIConfig)
+    vision: VisionConfig = field(default_factory=VisionConfig)
     cookie: CookieConfig = field(default_factory=CookieConfig)
     download: DownloadConfig = field(default_factory=DownloadConfig)
     root: Path = field(default_factory=Path.cwd, repr=False, compare=False)
@@ -321,11 +395,14 @@ class Config:
             transcribe=_section(TranscribeConfig, d.get("transcribe")),
             frames=_section(FramesConfig, d.get("frames")),
             summarize=_section(SummarizeConfig, d.get("summarize")),
+            local_ai=_section(LocalAIConfig, d.get("local_ai")),
+            vision=_section(VisionConfig, d.get("vision")),
             cookie=_section(CookieConfig, d.get("cookie")),
             download=_section(DownloadConfig, d.get("download")),
             root=Path(root) if root else Path.cwd(),
         )
         cfg.paths = cfg.paths.resolve(cfg.root)
+        cfg.local_ai = cfg.local_ai.resolve(cfg.root)
         return cfg
 
     @classmethod
@@ -392,6 +469,17 @@ class Config:
         """模型本地目录。不存在时由调用方给出下载指引，不做隐式联网下载。"""
         return Path(self.paths.model_dir) / self.runtime.model
 
+    def vision_model_path(self) -> Path:
+        """视觉模型（GGUF + mmproj）的落点。
+
+        与 `model_path()` 并列而不是塞进 `models/<runtime.model>/`：
+        whisper 与视觉模型的生命周期不同（前者必装、后者可选），
+        混在一个目录里会让「删掉视觉模型」变成一件危险的操作。
+        """
+        if self.local_ai.model_dir:
+            return Path(self.local_ai.model_dir)
+        return Path(self.paths.model_dir) / "qwen3-vl-2b"
+
     def work_path(self) -> Path:
         return Path(self.paths.work_dir)
 
@@ -426,3 +514,12 @@ class Config:
             raise ConfigError("frames.sheet_cols / sheet_rows 必须 >= 1")
         if self.download.rate_limit_per_min < 1:
             raise ConfigError("download.rate_limit_per_min 必须 >= 1")
+        if not 1024 <= self.local_ai.port <= 65535:
+            raise ConfigError(f"local_ai.port 必须在 1024–65535，当前 {self.local_ai.port}")
+        if self.local_ai.startup_timeout <= 0:
+            raise ConfigError("local_ai.startup_timeout 必须 > 0")
+        if self.vision.max_sheets < 1:
+            raise ConfigError("vision.max_sheets 必须 >= 1")
+        if self.vision.max_tokens < 64:
+            # 低于 64 时 OCR 结果必然被截断，产物会变成半句话，不如早点拦住
+            raise ConfigError("vision.max_tokens 必须 >= 64")

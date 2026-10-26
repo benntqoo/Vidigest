@@ -1,6 +1,7 @@
 # Vidigest — 交接文档
 
-> **最后更新**：2026-10-26 17:30（**多平台架构骨架 0.3.0** —— `app/platforms/` 落地：registry + 通用 yt-dlp 实现 + 抖音专用（会话预检、作者列举如实 NotSupported）；新增 `list_author` 命令（批量下载入口，替 yt-dlp `--flat-playlist -J` 归一化）；平台识别加 twitter/x。协议 **47** 条判据全过。批量勾选 UI 未做、抖音作者列举未打通，见 `docs/架构_多平台与批量下载.md`）
+> **最后更新**：2026-10-27 05:30（**本地优先 AI 后端 0.6.0** —— 新增 `app/core/ai_backend.py`：后端选择收敛成「本地 llama-server → 云 API → 无」三级，**没有云端密钥也能汇总**；新增 `app/core/vision.py`：拼版图 → `visual.md` → 并入汇总输入；设置页加「本地模型」「画面理解」两节。实测（4060 Ti 16G）：Qwen3-VL-2B Q4 **1.8 s/张**、显存 **3.2 GiB**，端到端 **9.5 s** 全程无云端密钥。协议 **59** 条判据全过。**模型与 llama-server 需用户自备，尚未做应用内下载**）
+> ~~2026-10-26 17:30（**多平台架构骨架 0.3.0** —— `app/platforms/` 落地：registry + 通用 yt-dlp 实现 + 抖音专用（会话预检、作者列举如实 NotSupported）；新增 `list_author` 命令（批量下载入口，替 yt-dlp `--flat-playlist -J` 归一化）；平台识别加 twitter/x。协议 **47** 条判据全过。批量勾选 UI 未做、抖音作者列举未打通，见 `docs/架构_多平台与批量下载.md`）~~
 > ~~2026-10-26 21:30（**版本 0.2.0 + 版本号单真源** —— `VERSION` 文件 + `./dev.sh bump x.y.z` 一次改 5 处（tauri/package/Cargo/rpc），窗口标题与状态栏都显示同一版本；卸载改为「留 workspace/models、删 config/state.db」；新增 `clear_data`（设置→维护）；模型探测只认数据目录与安装目录。协议 **43** 条判据全过）~~
 > ~~2026-10-26（**目录策略反转** —— 默认放 `<安装目录>\\workspace` / `\\models`（不可写自动回退），`work` 目录名改 `workspace`，首启弹窗同时确认两个目录；卸载清理改为 `vidigest.exe --cleanup-appdata`（旧 `RemoveFolderEx` 方案实测静默失败）。协议 **37** 条判据 + 出包后核对 **7** 条全过）~~
 > ~~2026-10-25（**转写语言改下拉 + 工作目录首启引导** —— `transcribe.language` 空串=自动检测（faster-whisper 只认 `None`）；语言选项由后端 `get_config.languages` 下发，前端不再有第二份表；打包首启把 `work_dir` 预置到**剩余空间最大的非系统盘**并弹一次性确认（`paths.work_dir_confirmed`）。协议 **33** 条判据全过、`./dev.sh check` 全绿）~~

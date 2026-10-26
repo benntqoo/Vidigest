@@ -137,7 +137,7 @@ logging.basicConfig(stream=sys.stderr, ...)
 （`app/rpc.py::EDITABLE_SECTIONS`），且 key 必须是该 section 的 dataclass 字段：
 
 ```
-paths / runtime / transcribe / frames / summarize / download
+paths / runtime / transcribe / frames / summarize / local_ai / vision / download
 ```
 
 未知 section → `warnings` 里 `E_UNKNOWN_SECTION:<name>`；未知 key →
@@ -259,7 +259,7 @@ download_model
 | `douyin_login_state` | `{"state","message"}` | 抖音登录进度。`waiting` 表示窗口已开、等扫码 |
 | `author_page` | `{"platform","title","total","truncated","url","items":[{"url","title","duration","item_id","thumb"}]}` | 作者作品列表。`url` 可直接交给 `add_tasks`；`truncated=true` 表示还有更多 |
 | `data_cleared` | `{"scope","tasks_removed","files_removed","errors"}` | 清空完成。`files_removed` 是文件数；`errors` 是删不掉的条目（被占用） |
-| `config` | `{"path","is_default","config","languages","work_dir_exists","model_path","model_present","model_missing_files","model_size_bytes","read_only_fields","api_key_env","api_key_present","pipeline_state","download"}` | `get_config` 的响应，见 §3.2。`languages` 是 `[{code,label}]`，首项 `code=""` = 自动检测；**选项由后端下发，前端不另存一份**（两份表必然漂移） |
+| `config` | `{"path","is_default","config","languages","work_dir_exists","model_path","model_present","model_missing_files","model_size_bytes","read_only_fields","api_key_env","api_key_present","ai","pipeline_state","download"}` | `get_config` 的响应，见 §3.2。`languages` 是 `[{code,label}]`，首项 `code=""` = 自动检测；**选项由后端下发，前端不另存一份**（两份表必然漂移）。`ai` 是「会用哪个后端」的诊断（`active` / `local_ready` / `local_running` 等），**只探测不启动进程** |
 | `config_saved` | `{"path","config","warnings": [...], "restart_required": true}` | `set_config` 的响应。**Rust 收到后重启 worker**，见 §3.2.2 |
 | `model_download_started` / `_progress` / `_verifying` / `_done` / `_failed` / `_cancelled` | 见 §3.2.4 | 模型下载事件流 |
 | `env_verify_started` | `{}` | `verify_env` 的命令回执；随后会来一条 `env_verified` |
@@ -522,6 +522,7 @@ stdout 写入     → 加锁后单线程写入（JSON Lines 天然按行独立�
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-27 | v1.10 | **本地优先 AI 后端**：新增可编辑段 `local_ai`（llama-server 参数）与 `vision`（画面理解开关）；汇总与画面理解的后端由 `app/core/ai_backend.py::resolve()` 统一选（**本地 llama-server → 云端 → 无**），`skip_reason` 不再因缺密钥而拦截，**没有云端密钥也能汇总**；`get_config` 增 `ai` 诊断（只探测、**不启动进程**）。新增产物 `visual.md`（拼版图 → 模型读 → 并入汇总）。判据 53 → **59** |
 | 2026-10-24 | v1.3 | 设置界面 + 模型下载：① 命令表新增 5 条（`get_config` / `set_config` / `download_model` / `cancel_model_download` / `verify_env`），新增 §3.2 详述白名单、保存即重启（D-S1）、三态布尔与 `blocked_reason`、下载事件流与续传；② `env_verified` 增 `gpu_verified` 与 `blocked_reason`；③ **语义更正**：`gpu_usable=false` 只表示「验过，确实不能用」，`null` 且 `blocked_reason` 非空表示「因环境缺失没能验」——2026-10-24 安装版首启的「GPU 不可用」误报正是这两者被混为一谈；④ §9 判据 19 → **28** 条 |
 | 2026-10-27 | v1.9 | 汇总阶段落地（v1.9）：新增状态 `framed`，抽帧不再直接置 `done`；`summarizing` 阶段走 OpenAI 兼容 `chat/completions`，产物 `summary.md`（一句话结论 / 章节大纲带时间戳 / 关键要点 / 适合谁看）。未配置（未启用或无密钥）时跳过并照常 `done`。判据 48 → **53** |
 | 2026-10-26 | v1.8 | 抖音打通：浏览器取流（系统 Edge + playwright）取 DASH 两路 + ffmpeg 合并，**匿名无需cookie**；新增 `douyin_login`（有头扫码，登录态存 profile）。判据 47 → **48** |

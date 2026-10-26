@@ -27,3 +27,23 @@ export async function pickDirectory(
   });
   return typeof picked === "string" && picked ? picked : null;
 }
+
+/**
+ * 系统文件选择对话框。用于挑 `llama-server.exe` 这类**具体文件**——
+ * 让用户在目录树里翻一个 exe 比手填完整路径可靠得多（Windows 上路径带空格、
+ * 盘符大小写都能让人卡住）。
+ */
+export async function pickFile(
+  defaultPath?: string,
+  title = "选择文件",
+  filters?: { name: string; extensions: string[] }[],
+): Promise<string | null> {
+  const picked = await open({
+    directory: false,
+    multiple: false,
+    title,
+    defaultPath: defaultPath || undefined,
+    filters,
+  });
+  return typeof picked === "string" && picked ? picked : null;
+}
