@@ -11,8 +11,7 @@
     <?error Unsupported value of sys.BUILDARCH=$(sys.BUILDARCH)?>
 <?endif?>
 
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
-     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
     <Product
             Id="*"
             Name="{{product_name}}"
@@ -39,16 +38,23 @@
         <Property Id="LAUNCHAPPARGS" Secure="yes" />
 
         <!--
-          卸载清理的目标目录。默认值指向一个**必然不存在**的路径，而不是留空：
-          留空会让 WixRemoveFoldersEx 拿到 null 自定义动作数据，那个分支没有实测过，
-          万一它报错就会**中断升级**（代价远大于收益）。指向不存在的目录则是
-          明确的无操作。
-          真正的值由下面的 SetProperty 在 `NOT UPGRADINGPRODUCTCODE` 时写入
-          （与本文件 RemoveShortcuts 用的是同一个守卫）。
+          卸载时清理用户数据：交给应用自己做（vidigest.exe 的 cleanup-appdata 开关）。
+          注意 XML 注释里不能出现连续两个减号，所以下面描述开关时不写它的完整拼写。
+
+          为什么不用 util:RemoveFolderEx（2026-10-26 实测失败后改的）：
+          那个方案需要在卸载前用 SetProperty 把 [LocalAppDataFolder]Vidigest 算进一个属性，
+          而 [LocalAppDataFolder] 是目录属性、由 CostFinalize 才填出来 ——
+          SetProperty 排在它之前就只能拿到空串，RemoveFolderEx 于是删了个不存在的路径，
+          静默成功、什么也没删（实测：卸载后 config.yaml 的 mtime 还停在卸载前）。
+          交给应用做则没有属性格式化的时序问题，而且能在本机实测。
+
+          Return="ignore"：清理失败不该让卸载中断 —— 程序文件已经删了，
+          再弹一个「卸载失败」只会误导用户。
+          Impersonate="yes"：要以发起卸载的那个用户身份执行，否则 LOCALAPPDATA
+          指向的是 SYSTEM 的目录。
         -->
-        <Property Id="VIDIGEST_APPDATA_DIR" Value="[TempFolder]__vidigest_uninstall_skip__" Secure="yes" />
-        <SetProperty Id="VIDIGEST_APPDATA_DIR" Value="[LocalAppDataFolder]Vidigest"
-                     Before="CostFinalize" Sequence="execute">NOT UPGRADINGPRODUCTCODE</SetProperty>
+        <CustomAction Id="CleanupAppData" FileKey="Path" ExeCommand="--cleanup-appdata"
+                      Execute="deferred" Impersonate="yes" Return="ignore" />
 
         {{#if allow_downgrades}}
             <MajorUpgrade Schedule="afterInstallInitialize" AllowDowngrades="yes" />
@@ -58,6 +64,13 @@
 
         <InstallExecuteSequence>
             <RemoveShortcuts>Installed AND NOT UPGRADINGPRODUCTCODE</RemoveShortcuts>
+            <!--
+              在 RemoveFiles 之前跑：那时 vidigest.exe 还在，CA 才调得动。
+              守卫 NOT UPGRADINGPRODUCTCODE 与本文件的 RemoveShortcuts 是同一个 ——
+              MSI 的 major upgrade 是「先卸旧版再装新版」，不加守卫的话每次升级都会
+              清掉 config.yaml 与 state.db（用户就得重新指模型路径，或重下 2.9 GiB）。
+            -->
+            <Custom Action="CleanupAppData" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
         </InstallExecuteSequence>
 
         <Media Id="1" Cabinet="app.cab" EmbedCab="yes" />
@@ -124,24 +137,6 @@
         <UIRef Id="WixUI_InstallDir" />
 
         <Directory Id="TARGETDIR" Name="SourceDir">
-            <!--
-              卸载时删除用户数据目录（%LOCALAPPDATA%\Vidigest：state.db / config.yaml /
-              work/ / 默认 model_dir）。**只在「真卸载」时删，升级不动** —— 守卫靠
-              `NOT UPGRADINGPRODUCTCODE`：MSI 的 major upgrade 是「先卸旧版再装新版」，
-              旧版那份卸载会话里 `UPGRADINGPRODUCTCODE` 有值，此时 SetProperty 不执行，
-              `VIDIGEST_APPDATA_DIR` 保持未定义，util:RemoveFolderEx 拿到空属性 ⇒ 什么都不删。
-
-              ⚠️ 这段逻辑**没有在本机实测过**（MSI 装卸要提权 + GUI）。写法是 WiX 的标准
-              做法，出包后必须手工走一遍「装 → 卸 → 看目录是否消失」+「升级 → 看数据是否还在」。
-              详见 docs/打包与分发.md 的「卸载清理」一节。
-            -->
-            <Component Id="VidigestAppDataCleanup" Guid="6C1F0B24-8E3A-4C77-9A21-5F2D7E4B9A10" Win64="$(var.Win64)">
-                <!-- 这个组件除了「卸载时删目录」没有别的产物，但 MSI 要求每个组件有
-                     KeyPath —— 没有它组件不会被记进安装清单，卸载时 RemoveFolderEx
-                     根本不会被调用（表现为「什么都没删」）。 -->
-                <RegistryValue Root="HKCU" Key="Software\\{{manufacturer}}\\{{product_name}}" Name="AppDataCleanup" Type="integer" Value="1" KeyPath="yes" />
-                <util:RemoveFolderEx On="uninstall" Property="VIDIGEST_APPDATA_DIR" />
-            </Component>
             <Directory Id="DesktopFolder" Name="Desktop">
                 <Component Id="ApplicationShortcutDesktop" Guid="*">
                     <Shortcut Id="ApplicationDesktopShortcut" Name="{{product_name}}" Description="Runs {{product_name}}" Target="[!Path]" WorkingDirectory="INSTALLDIR" />
@@ -261,7 +256,6 @@
                 Absent="disallow">
 
             <ComponentRef Id="RegistryEntries"/>
-            <ComponentRef Id="VidigestAppDataCleanup"/>
 
             {{#each resource_file_ids as |resource_file_id| ~}}
                 <ComponentRef Id="{{ resource_file_id }}"/>

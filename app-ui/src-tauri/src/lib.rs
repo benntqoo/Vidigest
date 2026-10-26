@@ -3,6 +3,7 @@
 //! 架构：本进程是 **UI + 监督器**，全部重活由常驻 Python worker 承担（`PLAN §7.1`）。
 //! 两者之间是 stdin/stdout 的 JSON Lines 协议，零端口，契约见 `docs/IPC协议规格.md`。
 
+mod cleanup;
 mod commands;
 mod worker;
 
@@ -10,6 +11,13 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 卸载清理**必须先于** Builder：MSI 的自定义动作会带着这个开关调用本程序，
+    // 那时用户看到的是「正在卸载」的进度条，弹一个窗口出来是灾难。
+    // 这里直接删数据目录然后退出，不建 app、不启 worker。
+    if cleanup::is_cleanup_invocation(std::env::args()) {
+        std::process::exit(cleanup::run_cleanup());
+    }
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
