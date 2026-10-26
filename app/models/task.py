@@ -142,7 +142,7 @@ class Task:
         """输出目录名：`<id 四位补零>_<安全标题>`。
 
         补零是为了在文件管理器里按名称排序时与任务序号一致——IPC 协议
-        `docs/IPC协议规格.md` §5.1 的示例即 `work/0007_示例视频标题`。
+        `docs/IPC协议规格.md` §5.1 的示例即 `workspace/0007_示例视频标题`。
         无标题时退回 video_id / 占位符。
         """
         prefix = f"{self.id:04d}" if self.id is not None else "0000"

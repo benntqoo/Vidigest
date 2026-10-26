@@ -19,10 +19,20 @@
 //!
 //! ## 为什么不顺手多删几个地方
 //!
-//! 只删 `<LocalAppData>\Vidigest`（应用数据目录）与 `<LocalAppData>\com.benntqoo.vidigest`
-//! （WebView2 的 user data 目录，实测卸载后会留下 ~70 MB）。
-//! **不碰** `work_dir` / `model_dir` 指向的外部目录：那些可能被用户改到 D 盘，
-//! 里面有几十 GB 产出和 2.9 GiB 模型。删它们不是「清理」，是毁数据。
+//! 删四处：
+//!
+//! | 目标 | 内容 |
+//! |---|---|
+//! | `<LocalAppData>\Vidigest` | state.db / config.yaml |
+//! | `<LocalAppData>\com.benntqoo.vidigest` | WebView2 user data（实测卸载后留 ~70 MB） |
+//! | `<安装目录>\workspace` | 产出（mp4 / wav / jpg），**只在它确实在安装目录下时** |
+//! | `<安装目录>\models` | 模型（2.9 GiB），同上 |
+//!
+//! 后两个是 2026-10-26 加的：默认目录改成「安装目录下」之后，卸载不删它们就会在
+//! 安装目录里留几十 GB。代价是**模型也没了**，重装要重新复制或下载 —— 这是
+//! 「一个地方放全部」的必然结果，已记录在 docs/打包与分发.md §6.3。
+//!
+//! 不碰用户**改到别处**的目录：我们只删这两个固定名字的子目录，且只删安装目录下的。
 
 use std::path::PathBuf;
 
@@ -39,6 +49,20 @@ const BUNDLE_IDENTIFIER: &str = "com.benntqoo.vidigest";
 /// 命令行里有没有卸载清理开关。
 pub fn is_cleanup_invocation(args: impl IntoIterator<Item = String>) -> bool {
     args.into_iter().any(|a| a == CLEANUP_FLAG)
+}
+
+/// 安装目录（`vidigest.exe` 所在的那一层）。
+///
+/// 卸载的自定义动作用的是**主程序**（`FileKey="Path"`），所以 `current_exe()`
+/// 的父目录就是安装目录 —— 不是 worker 所在的 `worker/` 子目录。
+///
+/// `VIDIGEST_CLEANUP_EXE_DIR` 只用于测试：把安装目录换成一个临时目录，
+/// 好在不碰真实安装的情况下验证「workspace / models 会被删」。
+fn install_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("VIDIGEST_CLEANUP_EXE_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    std::env::current_exe().ok()?.parent().map(PathBuf::from)
 }
 
 /// `<LocalAppData>` 根目录。
@@ -63,8 +87,17 @@ pub fn run_cleanup() -> i32 {
         return 0;
     };
 
-    for name in [APP_DIR_NAME, BUNDLE_IDENTIFIER] {
-        let target = root.join(name);
+    let mut targets: Vec<PathBuf> = [APP_DIR_NAME, BUNDLE_IDENTIFIER]
+        .iter()
+        .map(|name| root.join(name))
+        .collect();
+    if let Some(inst) = install_dir() {
+        // 只删这两个**固定名字**的子目录。安装目录本身不碰。
+        targets.push(inst.join("workspace"));
+        targets.push(inst.join("models"));
+    }
+
+    for target in targets {
         if !target.exists() {
             // 正常情况：没装过 / 已经删过。不算错误。
             continue;

@@ -1,6 +1,7 @@
 # Vidigest — 交接文档
 
-> **最后更新**：2026-10-25（**转写语言改下拉 + 工作目录首启引导** —— `transcribe.language` 空串=自动检测（faster-whisper 只认 `None`）；语言选项由后端 `get_config.languages` 下发，前端不再有第二份表；打包首启把 `work_dir` 预置到**剩余空间最大的非系统盘**并弹一次性确认（`paths.work_dir_confirmed`）。协议 **33** 条判据全过、`./dev.sh check` 全绿）
+> **最后更新**：2026-10-26（**目录策略反转** —— 默认放 `<安装目录>\\workspace` / `\\models`（不可写自动回退），`work` 目录名改 `workspace`，首启弹窗同时确认两个目录；卸载清理改为 `vidigest.exe --cleanup-appdata`（旧 `RemoveFolderEx` 方案实测静默失败）。协议 **37** 条判据 + 出包后核对 **7** 条全过）
+> ~~2026-10-25（**转写语言改下拉 + 工作目录首启引导** —— `transcribe.language` 空串=自动检测（faster-whisper 只认 `None`）；语言选项由后端 `get_config.languages` 下发，前端不再有第二份表；打包首启把 `work_dir` 预置到**剩余空间最大的非系统盘**并弹一次性确认（`paths.work_dir_confirmed`）。协议 **33** 条判据全过、`./dev.sh check` 全绿）~~
 > ~~2026-10-24（**设置界面 + 模型下载 S1–S5 全部完成** —— 修「GPU 不可用」误报（三态 + `blocked_reason`）、新增应用内模型下载（2.88 GiB，续传/取消/校验）、新增全量 config 设置页；协议 19 → **28** 条判据全过、下载器自测 **8/8**、`./dev.sh check` 全绿、MSI 已重出）~~
 > ~~2026-10-14（**改名已执行并重出包** —— `Vidnote` → `Vidigest`：代码/配置 18 处 + 数据目录迁移 + worker 重建（28/28 冒烟）+ MSI 重出（`./dev.sh release` **exit 0**，耗时 9m3s）+ 落位读生成物核对；本地仓库目录与 GitHub 仓库名**未改**。**代码改动尚未提交。**）~~
 > ~~2026-10-14（**产品口径决议** —— 新名 = `Vidigest`（**未执行**）、PRD §1.2「不做」拆为「永久不做 / 暂不做（可逆）」、P6/P7 立项为 `docs/adr/0001`）~~

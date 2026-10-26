@@ -642,30 +642,6 @@ class Worker:
             if getattr(getattr(new_cfg, section), key) != getattr(getattr(self.cfg, section), key):
                 warnings.append(f"E_BASELINE_PARAM_CHANGED:{dotted}")
 
-        # 目录不能在**安装目录**里（2026-10-26）。
-        #
-        # 三个具体后果，不是洁癖：
-        # 1. MSI 是 perMachine，`%ProgramFiles%` 对普通用户只读 —— 写 mp4/wav 会失败；
-        # 2. 卸载/升级会清安装目录 ⇒ 产出跟着一起没；
-        # 3. 即便用户是管理员能写，UAC 虚拟化也可能把写入悄悄重定向到 VirtualStore，
-        #    用户在「他选的路径」下找不到文件。
-        #
-        # 只在**打包运行**时校验：源码运行的 `program_dir()` 就是仓库根，而
-        # `work/` 默认就在仓库里（阶段 1/2 的判据依赖这一点），不拦。
-        install_dir = self._install_dir()
-        if install_dir is not None:
-            for key in ("work_dir", "model_dir"):
-                after = getattr(new_cfg.paths, key)
-                if paths.dir_is_inside(after, install_dir):
-                    self.proto.error(
-                        "E_DIR_IN_INSTALL",
-                        f"paths.{key} 不能放在安装目录里：{after}\n"
-                        f"  安装目录是 {install_dir}，该目录只读、且卸载/升级会整个删掉。\n"
-                        "  请选一个独立的目录（例如 D:\\Vidigest\\work）。",
-                        req_id=req_id,
-                    )
-                    return
-
         # 目录可写探测（R3）：只探用户真的改过的目录
         for key in ("work_dir", "model_dir"):
             before = getattr(self.cfg.paths, key)
@@ -788,16 +764,6 @@ class Worker:
                 str(data.get("blocked_reason") or ""),
             )
 
-    def _install_dir(self) -> str | None:
-        """打包运行时的安装目录；源码运行返回 `None`（= 不做「不能放安装目录」的校验）。
-
-        为什么要区分：源码运行时 `program_dir()` 是仓库根，而 `work/` 默认就在仓库里，
-        这是正常开发布局，拦了会误伤阶段 1/2 的判据。
-        """
-        if not paths.is_frozen():
-            return None
-        return str(paths.program_dir())
-
     def _config_payload(self) -> dict[str, Any]:
         """`get_config` 的响应体：全量配置 + 元信息。"""
         cfg = self.cfg
@@ -822,9 +788,6 @@ class Worker:
             "is_default": self.config_is_default,
             "config": cfg.to_dict(),
             "languages": languages,
-            # None = 源码运行（此时不做「目录不能在安装目录里」的校验）。
-            # 界面用它做即时提示，后端 `set_config` 用同一个值做硬拦。
-            "install_dir": self._install_dir(),
             "model_path": str(model_path),
             "model_present": not missing,
             "model_missing_files": missing,
@@ -965,23 +928,11 @@ class Worker:
 
 
 def _probe_dir_writable(path: Path) -> str | None:
-    """探测目录是否可写：能建目录 + 能建删一个临时文件。
+    """目录可写探测 —— 实现在 `paths.probe_dir_writable()`。
 
-    返回 `None` 表示可写，否则返回可直接展示给用户的原因。
-
-    **为什么要建目录**：用户常把 `model_dir` 指到一个还不存在的目录（例如
-    `D:\\Vidigest\\models`），那是合法意图。这里顺手建出来，而不是回一句
-    「不存在」把人挡住 —— 但建不出来时（不存在的盘、只读、网络盘掉线）
-    必须**如实拒绝**，否则保存成功、下载时才炸，用户不知道是哪一步错了。
+    首启挑默认目录也要用它（安装目录可能只读），所以不能只留在 RPC 这一层。
     """
-    try:
-        path.mkdir(parents=True, exist_ok=True)
-        probe = path / f".vidigest-write-probe-{os.getpid()}"
-        probe.write_bytes(b"")
-        probe.unlink()
-    except OSError as exc:
-        return f"{type(exc).__name__}: {exc}"
-    return None
+    return paths.probe_dir_writable(path)
 
 
 def _maybe_enable_faulthandler() -> None:

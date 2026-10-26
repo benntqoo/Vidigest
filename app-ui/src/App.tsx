@@ -18,7 +18,7 @@ import { LogPanel, type LogEntry } from "./components/LogPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { StatusBar } from "./components/StatusBar";
 import { TaskTable } from "./components/TaskTable";
-import { WorkDirGuide } from "./components/WorkDirGuide";
+import { DirsGuide } from "./components/DirsGuide";
 import * as api from "./worker/client";
 import type { CloseRequest } from "./worker/client";
 import type {
@@ -481,26 +481,31 @@ function App() {
       <LogPanel entries={logs} onClear={() => setLogs([])} />
 
       {/*
-        首启工作目录引导。触发条件是显式的确认位，而不是「路径等于默认值」——
-        后者会让「我就是要用 LOCALAPPDATA」的用户每次启动都被弹。
+        首启目录确认（工作目录 + 模型目录）。触发条件是显式的确认位，而不是
+        「路径等于默认值」—— 后者会让「我就是要用 LOCALAPPDATA」的用户每次启动都被弹。
         与设置模态互斥：先让用户处理引导，避免两个覆盖层叠在一起。
       */}
       {!settingsOpen &&
         !guideDismissed &&
         configInfo?.config.paths.work_dir_confirmed === false && (
-          <WorkDirGuide
-            suggested={configInfo.config.paths.work_dir}
-            installDir={configInfo.install_dir}
+          <DirsGuide
+            suggestedWork={configInfo.config.paths.work_dir}
+            suggestedModel={configInfo.config.paths.model_dir}
+            modelPresent={!!configInfo.model_present}
             busy={applyingSince !== null}
-            onConfirm={(workDir) => {
-              // **不在这里关掉引导**：保存可能失败（目录不可写 / 非法路径），
+            onConfirm={(work, model) => {
+              // 不在这里关掉引导：保存可能失败（目录不可写 / 非法路径），
               // 乐观关闭会让用户以为设置好了。真正的关闭条件是 `config_saved`
-              // 把 `work_dir_confirmed` 变成 true —— 那说明确实落盘了。
+              // 把 `work_dir_confirmed` 变成 true。
               setVerifying(false);
               run(
-                "确认工作目录",
+                "确认目录",
                 api.setConfig({
-                  paths: { work_dir: workDir, work_dir_confirmed: true },
+                  paths: {
+                    work_dir: work,
+                    model_dir: model,
+                    work_dir_confirmed: true,
+                  },
                 }),
               );
             }}

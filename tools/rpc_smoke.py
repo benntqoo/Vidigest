@@ -312,7 +312,6 @@ def run_main_flow(env: dict[str, str]) -> Host:
         "model_size_bytes",
         "read_only_fields",
         "languages",
-        "install_dir",
         "api_key_env",
         "api_key_present",
         "download",
@@ -322,15 +321,6 @@ def run_main_flow(env: dict[str, str]) -> Host:
         cfg_evt is not None and needed.issubset(cd.keys()) and isinstance(cd.get("config"), dict),
         f"缺字段={sorted(needed - set(cd.keys()))} model_present={cd.get('model_present')}",
     )
-    # 源码运行时 install_dir 必须是 null：非 null 会让「目录不能在安装目录里」的
-    # 硬校验生效，而开发布局里 work/ 本来就在仓库根 —— 那样连 `./dev.sh check`
-    # 自己都会踩到。
-    host.record(
-        "源码运行 install_dir=None（不启用安装目录校验）",
-        cd.get("install_dir") is None,
-        f"install_dir={cd.get('install_dir')!r}",
-    )
-
     # ---- 设置：set_config 的安全边界 ----
     host.send(
         "set_config",
@@ -558,12 +548,16 @@ def check_language_table(judgements: list[tuple[str, bool, str]]) -> None:
     )
 
 
-def check_work_dir_defaults(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
-    """首启工作目录：默认必须避开系统盘，且「已确认」标记不能在解析时被重置。
+def check_default_dirs(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
+    """首启默认目录：**优先安装目录**，安装目录不可写才回退。
 
-    第 2 条防的是一个**静默**缺陷：`PathsConfig.resolve()` 是逐字段重建，
-    漏一个字段就会在每次 `Config.from_dict` 时把它重置成默认值。表现是
-    「引导弹了、用户点了确认、下次启动又弹」—— 用户会以为设置没保存。
+    第 1 条防的是静默缺陷：`PathsConfig.resolve()` 是逐字段重建，漏一个字段就会在
+    每次 `Config.from_dict` 时把它重置成默认值。表现是「引导弹了、用户点了确认、
+    下次启动又弹」—— 用户会以为设置没保存。
+
+    第 2/3 条是同一条规则的两面：装到可写位置（例如 D:////Tool////Vidigest）时默认落在
+    安装目录下；装到 Program Files 且当前用户没写权限时必须**自动回退**，
+    否则首启就是「保存失败」，用户完全不知道该改哪里。
     """
     from app.core import paths as paths_mod
     from app.models.config import Config
@@ -578,48 +572,68 @@ def check_work_dir_defaults(tmp: str, judgements: list[tuple[str, bool, str]]) -
         )
     )
 
-    # ---- 2. 默认目录避开系统盘 ----
-    # `pick_default_work_dir()` 在非 frozen 下刻意返回相对路径（源码运行行为不变），
-    # 所以要临时把它当成打包运行来测。用完立刻还回去，否则后面所有
-    # `app_data_dir()` 都跟着变，污染本脚本其余判据。
-    original = paths_mod.is_frozen
-    paths_mod.is_frozen = lambda: True  # type: ignore[assignment]
+    # ---- 2/3. 安装目录优先 + 不可写回退 ----
+    # 这三条都要「假装打包运行」，用完立刻还回去，否则后面所有 `app_data_dir()`
+    # 都跟着变，污染本脚本其余判据。
+    orig_frozen = paths_mod.is_frozen
+    orig_install = paths_mod.install_dir
     try:
-        picked = paths_mod.pick_default_work_dir()
-        system = (os.environ.get("SystemDrive") or "C:").rstrip("\\/").upper()
-        others = [
-            f"{c}:"
-            for c in "DEFGHIJKLMNOPQRSTUVWXYZ"
-            if Path(f"{c}:\\").exists() and f"{c}:" != system
-        ]
-        if others:
-            ok = picked.is_absolute() and picked.drive.upper() != system
-            note = f"选了 {picked}（系统盘 {system}，可用非系统盘 {others[:3]}）"
-        else:
-            ok = picked == paths_mod.app_data_dir() / "work"
-            note = f"无可用非系统盘，回退 {picked}"
-        judgements.append(("首启默认工作目录避开系统盘", ok, note))
+        paths_mod.is_frozen = lambda: True  # type: ignore[assignment]
 
-        # 把已选中的那块盘当作系统盘，必须换一块或回退 —— 证明「跳过系统盘」
-        # 不是碰巧，而是真在比较盘符。
-        alt = paths_mod.pick_default_work_dir(system_drive=picked.drive or "C:")
+        inst = Path(tmp) / "inst"
+        inst.mkdir(parents=True, exist_ok=True)
+        paths_mod.install_dir = lambda: inst  # type: ignore[assignment]
+        picked = paths_mod.pick_default_work_dir()
         judgements.append(
             (
-                "声明该盘为系统盘后不再选它",
-                alt != picked,
-                f"重新选择 → {alt}",
+                "安装目录可写 → 默认工作目录 = <安装目录>/workspace",
+                picked == inst / "workspace",
+                f"选了 {picked}",
             )
         )
+        picked_model = paths_mod.pick_default_model_dir("large-v3", roots=[Path(tmp) / "empty"])
+        judgements.append(
+            (
+                "安装目录可写 → 默认模型目录 = <安装目录>/models",
+                picked_model == inst / "models",
+                f"选了 {picked_model}",
+            )
+        )
+
+        # 指向一个不存在的盘 ⇒ mkdir 必然失败 ⇒ 走得通「不可写」这一支。
+        paths_mod.install_dir = lambda: Path("Z:////no-such-drive////inst")  # type: ignore[assignment]
+        fallback = paths_mod.pick_default_work_dir()
+        system = (os.environ.get("SystemDrive") or "C:").rstrip("\\/").upper()
+        has_other = any(
+            Path(f"{c}:\\").exists() and f"{c}:" != system
+            for c in "DEFGHIJKLMNOPQRSTUVWXYZ"
+        )
+        if has_other:
+            ok = fallback.drive.upper() != system and fallback.name == "workspace"
+        else:
+            ok = fallback == paths_mod.app_data_dir() / "workspace"
+        judgements.append(
+            ("安装目录不可写 → 回退到可写位置", ok, f"回退到 {fallback}（系统盘 {system}）")
+        )
     finally:
-        paths_mod.is_frozen = original  # type: ignore[assignment]
+        paths_mod.is_frozen = orig_frozen  # type: ignore[assignment]
+        paths_mod.install_dir = orig_install  # type: ignore[assignment]
+
+    judgements.append(
+        (
+            "源码运行 install_dir() 为 None",
+            orig_install() is None,
+            f"install_dir={orig_install()!r}",
+        )
+    )
 
 
-def check_model_dir_defaults(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
-    """首启模型目录探测：**完整**才算数（少一个文件就当成没装）。
+def check_model_dir_detect(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
+    """模型目录探测：**完整**才算数（少一个文件就当成没装）。
 
-    这一条直接对应「卸载删数据目录」带来的副作用：config.yaml 没了 ⇒ `model_dir`
-    回到默认值。如果探测把「下了一半」的目录认成可用，症状会是「刚重装就说
-    GPU 不可用」，而用户完全无从判断 —— 所以判据必须是 5 个文件全在。
+    对应「卸载删数据目录」的副作用：config.yaml 没了 ⇒ `model_dir` 回到默认值。
+    如果探测把「下了一半」的目录认成可用，症状会是「刚重装就说 GPU 不可用」，
+    而用户完全无从判断 —— 所以判据必须是 5 个文件全在。
     """
     from app.core import env_probe, paths as paths_mod
 
@@ -631,13 +645,7 @@ def check_model_dir_defaults(tmp: str, judgements: list[tuple[str, bool, str]]) 
         (full / name).write_bytes(b"x" * 8)
 
     found = paths_mod.find_existing_model_dir("large-v3", roots=[base])
-    judgements.append(
-        (
-            "已有完整模型 → 探测命中",
-            found == models,
-            f"返回={found}",
-        )
-    )
+    judgements.append(("已有完整模型 → 探测命中", found == models, f"返回={found}"))
 
     partial_base = Path(tmp) / "partial"
     partial = partial_base / "models" / "large-v3"
@@ -652,59 +660,6 @@ def check_model_dir_defaults(tmp: str, judgements: list[tuple[str, bool, str]]) 
         )
     )
 
-    # frozen 模拟：无已有模型时，默认模型目录跟工作目录一样去非系统盘。
-    original = paths_mod.is_frozen
-    paths_mod.is_frozen = lambda: True  # type: ignore[assignment]
-    try:
-        picked = paths_mod.pick_default_model_dir("large-v3", roots=[Path(tmp) / "empty"])
-        system = (os.environ.get("SystemDrive") or "C:").rstrip("\\/").upper()
-        has_other = any(
-            Path(f"{c}:\\").exists() and f"{c}:" != system
-            for c in "DEFGHIJKLMNOPQRSTUVWXYZ"
-        )
-        ok = picked.is_absolute() and (picked.drive.upper() != system if has_other else True)
-        judgements.append(
-            (
-                "无已有模型 → 默认模型目录避开系统盘",
-                ok,
-                f"选了 {picked}（系统盘 {system}）",
-            )
-        )
-    finally:
-        paths_mod.is_frozen = original  # type: ignore[assignment]
-
-
-def check_dir_guard(judgements: list[tuple[str, bool, str]]) -> None:
-    """`dir_is_inside` 的边界 —— 「不能把目录放进安装目录」这条规则的底座。
-
-    最容易写错的两个地方都在这几条里：
-    - 裸 `startswith` 会把 `Vidigest-old` 当成 `Vidigest` 的子目录 ⇒ **误拒**合法路径；
-    - 只拼分隔符再比会漏掉「目录正好等于安装目录」⇒ **漏放**最该拦的那一种。
-    """
-    from app.core.paths import dir_is_inside
-
-    install = r"C:\Program Files\Vidigest"
-    cases = [
-        ("等于安装目录", dir_is_inside(install, install), True),
-        ("安装目录下的子目录", dir_is_inside(install + r"\work", install), True),
-        ("嵌套更深", dir_is_inside(install + r"\work\2026\01", install), True),
-        ("大小写不同", dir_is_inside(r"c:\program files\VIDIGEST\work", install), True),
-        ("正斜杠", dir_is_inside("C:/Program Files/Vidigest/work", install), True),
-        ("尾部反斜杠", dir_is_inside(install + "\\", install), True),
-        ("同前缀的兄弟目录", dir_is_inside(install + "-old\\work", install), False),
-        ("同前缀的兄弟文件", dir_is_inside(r"C:\Program Files\Vidigest2", install), False),
-        ("别的盘", dir_is_inside(r"D:\Vidigest\work", install), False),
-        ("父目录本身", dir_is_inside(r"C:\Program Files", install), False),
-    ]
-    bad = [name for name, got, want in cases if got != want]
-    judgements.append(
-        (
-            "目录归属判断 dir_is_inside（10 个边界）",
-            not bad,
-            f"不符={bad}" if bad else f"{len(cases)} 个用例全对",
-        )
-    )
-
 
 def main() -> int:
     print("IPC 协议冒烟测试 —— docs/IPC协议规格.md §9\n")
@@ -716,9 +671,8 @@ def main() -> int:
     check_seq_monotonic(host)
     check_verify_cuda_tristate(tmp, host.judgements)
     check_language_table(host.judgements)
-    check_work_dir_defaults(tmp, host.judgements)
-    check_model_dir_defaults(tmp, host.judgements)
-    check_dir_guard(host.judgements)
+    check_default_dirs(tmp, host.judgements)
+    check_model_dir_detect(tmp, host.judgements)
 
     run_eof_flow(env, host.judgements)
 

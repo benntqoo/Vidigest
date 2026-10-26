@@ -164,11 +164,16 @@ def _section(cls: type[T], data: Any) -> T:
 class PathsConfig:
     """路径配置。
 
-    `work_dir` 是本机第一约束相关项：C 盘仅剩 150 GB，工作目录必须放 D 盘
-    （理由见 PLAN.md §2 / docs/实测记录.md §1）。
+    默认值都是**相对路径**（`workspace` / `models`），由调用方锚定到 `root`
+    （源码运行 = 仓库根）。打包运行时的默认值不走这里，而是
+    `paths.pick_default_work_dir()` / `pick_default_model_dir()`：
+    优先 `<安装目录>/workspace`、`<安装目录>/models`，安装目录不可写时回退。
+
+    ⚠️ 目录名 2026-10-26 从 `work` 改成 `workspace`，**字段名 `work_dir` 不变** ——
+    它是配置与协议里的契约，改名没有用户可见收益，只会多一处漂移风险。
     """
 
-    work_dir: str = "work"
+    work_dir: str = "workspace"
     model_dir: str = "models"
     #: 用户是否**明确确认过**工作目录。
     #:
