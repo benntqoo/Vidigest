@@ -212,6 +212,12 @@ cmd_check() {
   ( cd "$REPO/app-ui/src-tauri" || exit 1; run env CARGO_INCREMENTAL=0 cargo test --lib )
   step "前端类型检查 —— tsc --noEmit"
   ( cd "$REPO/app-ui" || exit 1; run npx tsc --noEmit )
+  # 主界面的「状态 → 视图」映射。tsc 只能保证类型对，保证不了语义对：
+  # 「待抽帧」写成「抽帧中」、「没验成」写成「GPU 不可用」都能通过编译。
+  # 24 条判据，纯函数，秒级，不需要 GPU / Rust。
+  step "主界面状态视图 —— tools/main_layout_selftest.mts"
+  run node --experimental-strip-types "$REPO/tools/main_layout_selftest.mts"
+
   say ""
   ok "全部判据通过"
 }

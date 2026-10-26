@@ -8,10 +8,14 @@
 // 触发条件是 `paths.work_dir_confirmed === false`，**不是**「路径等于默认值」——
 // 后者会让「我就是要用 LOCALAPPDATA」的用户每次启动都被弹一次。
 // 这个确认位现在覆盖**两个**目录（一个弹窗确认两个，避免两次打扰）。
+//
+// 表单件与设置页共用 `settings/primitives`：同一个「路径 + 浏览…」控件在两处
+// 长得不一样，是最容易被察觉的不专业（用户说不出原因，只觉得「拼的」）。
 
 import { useState } from "react";
 
-import { pickDirectory } from "../worker/pickDir";
+import { Callout, TextField } from "./settings/primitives";
+import "./settings/settings.css";
 
 interface Props {
   /** 配置里的 work_dir（程序自动挑的） */
@@ -53,70 +57,41 @@ export function DirsGuide({
         </p>
 
         {(workReused || modelPresent) && (
-          <p className="banner banner-info">
+          <Callout tone="info">
             检测到上次安装留下的数据，已直接沿用：
             {workReused ? "工作目录" : ""}
             {workReused && modelPresent ? " + " : ""}
             {modelPresent ? "模型" : ""}
             。卸载只清配置与任务历史，产出和模型都会保留。
-          </p>
+          </Callout>
         )}
 
-        <div className="field">
-          <span className="field-label">
-            工作目录
-            <em className="field-hint">下载的视频、抽出的音频和截图放这里；批量跑能到几十 GB</em>
-          </span>
-          <div className="field-pair">
-            <input
-              value={work}
-              disabled={busy}
-              spellCheck={false}
-              onChange={(e) => setWork(e.target.value)}
-            />
-            <button
-              type="button"
-              disabled={busy}
-              onClick={async () => {
-                const picked = await pickDirectory(work, "选择工作目录");
-                if (picked) setWork(picked);
-              }}
-            >
-              浏览…
-            </button>
-          </div>
-        </div>
-
-        <div className="field">
-          <span className="field-label">
-            模型目录
-            <em className="field-hint">
-              {modelPresent
+        <div className="st-stack st-form-block">
+          <TextField
+            label="工作目录"
+            value={work}
+            onChange={setWork}
+            disabled={busy}
+            mono
+            hint="下载的视频、抽出的音频和截图放这里；批量跑能到几十 GB"
+            browse={{ kind: "dir", title: "选择工作目录" }}
+          />
+          <TextField
+            label="模型目录"
+            value={model}
+            onChange={setModel}
+            disabled={busy}
+            mono
+            hint={
+              modelPresent
                 ? "已检测到完整模型，不用重新下载"
-                : "还没有模型；确认后可在设置里一键下载（约 2.9 GiB）"}
-            </em>
-          </span>
-          <div className="field-pair">
-            <input
-              value={model}
-              disabled={busy}
-              spellCheck={false}
-              onChange={(e) => setModel(e.target.value)}
-            />
-            <button
-              type="button"
-              disabled={busy}
-              onClick={async () => {
-                const picked = await pickDirectory(model, "选择模型目录");
-                if (picked) setModel(picked);
-              }}
-            >
-              浏览…
-            </button>
-          </div>
+                : "还没有模型；确认后可在设置里一键下载（约 2.9 GiB）"
+            }
+            browse={{ kind: "dir", title: "选择模型目录" }}
+          />
         </div>
 
-        {!valid && <p className="banner banner-warn">两个目录都不能为空</p>}
+        {!valid && <Callout tone="warn">两个目录都不能为空</Callout>}
 
         <div className="modal-actions">
           <button type="button" onClick={onLater} disabled={busy}>
@@ -132,7 +107,7 @@ export function DirsGuide({
           </button>
         </div>
 
-        <p className="settings-hint">
+        <p className="st-hint">
           「稍后再说」会沿用上面这两个自动挑的目录，下次启动再问。设置里随时能改。
         </p>
       </div>

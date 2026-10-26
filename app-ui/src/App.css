@@ -1,17 +1,40 @@
-/* 全局样式。桌面应用形态：顶部工具条 + 状态栏 + 任务表 + 底部日志区。
-   竖排布局，只有任务表滚动，日志区固定高度 —— 长跑时表头与工具条不该消失。 */
+/* 主界面样式：顶部工具条 + 任务列表 + 底部日志。
+ *
+ * 2026-10-27 版式改版。三条纪律（破坏其中一条就会退回「工程 demo」观感）：
+ *
+ * 1. **一条横条，不是一个顶栏加一个状态栏**。改版前是两条：工具栏 45px + 状态栏
+ *    33px，在 800×600 的默认窗口里吃掉 13% 高度，而且两条里有重复信息
+ *    （worker 挂掉时两个红圆片说的是同一句话）。现在状态并进顶栏，异常另起 alert。
+ * 2. **标题优先于列对齐**。改版前是 8 列固定宽度的表格，七个固定列吃掉 774px，
+ *    `width: auto` 的标题列被压到**只剩一个字**。任务队列里「这是哪个视频」
+ *    是唯一的必读信息，为它让出整行宽度，其余降级成第二行的元信息。
+ * 3. **状态词必须能区分「在跑」和「在等」**。改版前 `下载中/待抽音频/转写中/
+ *    待抽帧/抽帧中/待汇总/汇总中` 七个状态是同一个蓝色圆片，扫过去全是蓝的。
+ *    现在用四段阶段点（下载 → 转写 → 抽帧 → 汇总）+ 运行中才有的呼吸动效。
+ *
+ * 设置页的版式在 `components/settings/settings.css`（`.st-*` 前缀），
+ * 两套不共用类名 —— 曾经两套 `.progress` 并存，谁生效取决于文件顺序，
+ * 导致进度条被压成 6px、文字被裁掉。
+ */
 
 :root {
   --bg: #f6f7f9;
   --surface: #ffffff;
   --surface-2: #f0f1f4;
+  --surface-3: #f7f8fa;
   --border: #dcdee3;
+  --border-soft: #eaecf0;
   --text: #1c1f24;
+  --text-mid: #454b56;
   --text-dim: #6b7280;
   --accent: #2f6fed;
+  --accent-soft: #f1f6ff;
   --ok: #17a34a;
   --warn: #d97706;
   --error: #dc2626;
+  --radius: 6px;
+  --shadow-1: 0 1px 2px rgb(16 24 40 / 5%);
+  --shadow-2: 0 8px 24px rgb(16 24 40 / 16%);
 
   font-family: "Microsoft YaHei UI", "Microsoft YaHei", Inter, "Segoe UI", system-ui, sans-serif;
   font-size: 13px;
@@ -61,23 +84,149 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
 }
 
-.toolbar {
+/* ------------------------------------------------------------ 顶部工具条 */
+
+.topbar {
   flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  padding: 8px 12px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 
+.topbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* 高度定死 48px：工具条高度跟着内容抖动（比如「重启 worker」出现时换行）
+     会让下面整块内容跳一下，是本项目历史上反复出现的观感问题。 */
+  height: 48px;
+  padding: 0 12px;
+}
+
+/* 展开输入区时工具栏换成两行：第一行照旧（标题 / 主操作 / 状态），
+   输入区**整行独占**。
+   第一版让它与按钮抢剩余宽度，结果「暂停」「设置」各自折成两行 ——
+   800px 里塞不下「输入区 + 4 个按钮 + 2 个状态片」。 */
+.topbar-row.is-expanded {
+  flex-wrap: wrap;
+  row-gap: 8px;
+  height: auto;
+  min-height: 48px;
+  padding: 8px 12px;
+}
+
+.topbar-row.is-expanded .addtasks {
+  order: 10;
+  flex: 1 0 100%;
+}
+
 .brand {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding-right: 4px;
+  font-size: 14px;
   font-weight: 700;
-  letter-spacing: 0.02em;
-  margin-right: 4px;
+  letter-spacing: 0.01em;
+  /* 高 DPI 下 700 的中文容易糊，浅色投影拉回一点锐度 */
+  text-shadow: 0 0.5px 0 rgb(0 0 0 / 6%);
+  user-select: none;
+}
+
+.brand-sub {
+  font-size: 11px;
+  font-weight: 400;
+  color: #a2a8b3;
+  letter-spacing: 0;
+}
+
+/* 状态 chip 组：与主操作之间留出视觉间隔，但不再单独占一行 */
+.statuschips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+}
+
+/* ------------------------------------------------------------- 异常条 */
+
+/* 只在「现在做不了事」或「做下去会出错」时出现。
+   改版前这些信息是两个红色小圆片 + 右侧一行灰字，原因排在最后；
+   而它恰恰是用户此刻唯一想知道的东西。 */
+.alertbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  font-size: 12px;
+  border-top: 1px solid transparent;
+}
+
+.alert-error {
+  color: #8b1a1a;
+  background: #fdf3f3;
+  border-top-color: #f6d9d9;
+}
+
+.alert-warn {
+  color: #8a4b00;
+  background: #fffaef;
+  border-top-color: #f5e3c2;
+}
+
+.alertbar-mark {
+  flex: 0 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  border-radius: 50%;
+}
+
+.alert-error .alertbar-mark {
+  background: var(--error);
+}
+
+.alert-warn .alertbar-mark {
+  background: var(--warn);
+}
+
+.alertbar-text {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.alertbar-text strong {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.alertbar-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.82;
+}
+
+/* 描边会让它看起来像按钮（实测：第一版读者会去点「1 条任务失败」）。
+   改成浅底文字，明确它只是一句话的一部分。 */
+.alertbar-tag {
+  flex: 0 0 auto;
+  padding: 0 7px;
+  font-size: 11px;
+  line-height: 18px;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 5%);
 }
 
 /* -------------------------------------------------------------- 按钮 */
@@ -88,8 +237,12 @@ button {
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--radius);
   cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
 }
 
 button:hover:not(:disabled) {
@@ -105,10 +258,12 @@ button.primary {
   color: #fff;
   background: var(--accent);
   border-color: var(--accent);
+  box-shadow: 0 1px 2px rgb(47 111 237 / 24%);
 }
 
 button.primary:hover:not(:disabled) {
   background: #2760d4;
+  border-color: #2760d4;
 }
 
 button.mini {
@@ -126,17 +281,49 @@ button.danger:hover:not(:disabled) {
   background: #fdf2f2;
 }
 
-/* ---------------------------------------------------------- 状态栏 */
-
-.statusbar {
-  flex: 0 0 auto;
-  display: flex;
+/* 「暂停」不是主操作也不是危险操作，硬要给它一个既有层次又不抢戏的样式：
+   描边 + 深色文字，与「开始」的实心蓝区分开，同时表明「点了会停」。 */
+button.btn-pause {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  background: var(--surface-2);
-  border-bottom: 1px solid var(--border);
+  gap: 6px;
+  color: #8a4b00;
+  background: #fffaf0;
+  border-color: #f0d7ac;
 }
+
+button.btn-pause:hover:not(:disabled) {
+  background: #fff4e2;
+}
+
+.pause-glyph {
+  width: 8px;
+  height: 9px;
+  border-left: 3px solid currentColor;
+  border-right: 3px solid currentColor;
+}
+
+/* 图标按钮：设置 / 打开目录。文字按钮在 800px 宽度里太占位。 */
+button.iconbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  color: var(--text-mid);
+  background: transparent;
+  border-color: transparent;
+}
+
+button.iconbtn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+button.iconbtn-sm {
+  padding: 1px 5px;
+}
+
+/* ---------------------------------------------------------- 状态 chip */
 
 .chip {
   display: inline-flex;
@@ -151,8 +338,8 @@ button.danger:hover:not(:disabled) {
 }
 
 .chip .dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: currentColor;
 }
@@ -160,216 +347,372 @@ button.danger:hover:not(:disabled) {
 .chip-muted {
   color: var(--text-dim);
 }
+
 .chip-active {
   color: var(--accent);
   border-color: #c3d6fb;
-  background: #f1f6ff;
+  background: var(--accent-soft);
 }
+
 .chip-ok {
   color: var(--ok);
   border-color: #bfe6cd;
   background: #f2fbf5;
 }
+
 .chip-warn {
   color: var(--warn);
   border-color: #f2dcb8;
   background: #fffaf0;
 }
+
 .chip-error {
   color: var(--error);
   border-color: #f3c2c2;
   background: #fdf3f3;
 }
 
-.statusbar-detail {
+/* 可点的 chip：用 button 是为了键盘可达。 */
+button.chip-action {
+  padding: 1px 8px;
   font-size: 12px;
-  color: var(--error);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+button.chip-action:hover:not(:disabled) {
+  filter: brightness(0.97);
+  background: inherit;
+}
+
+/* --------------------------------------------------------- 任务列表 */
+
+.tasklist {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--surface);
+}
+
+.taskrow {
+  position: relative;
+  padding: 8px 12px 9px 15px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+/* 行左侧色条：状态一眼可辨，但不像整行染色那样刺眼。
+   只在「在跑」和「出问题」时上色 —— 完成的行上色会让整张表变成彩条。 */
+.taskrow::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: transparent;
+}
+
+.taskrow.is-running::before {
+  background: var(--accent);
+}
+
+.taskrow.row-error::before {
+  background: var(--error);
+}
+
+.taskrow.row-warn::before {
+  background: var(--warn);
+}
+
+.taskrow:hover {
+  background: #fafbfd;
+}
+
+.taskrow-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 24px;
+}
+
+/* 状态词有 2 字（完成 / 失败）也有 3 字（等待中 / 转写中）。不定宽的话
+   每行标题的左边缘会参差 —— 列表式布局本来就少了列对齐，这排 chip
+   是唯一还能形成「一列」的东西，别让它也歪。 */
+.taskrow-head > .chip {
+  flex: 0 0 auto;
+  justify-content: center;
+  min-width: 64px;
+}
+
+.taskrow-title {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 45%;
+  font-size: 13px;
+  color: var(--text);
 }
 
-/* --------------------------------------------------------- 任务表 */
+.taskrow.row-muted .taskrow-title {
+  color: var(--text-mid);
+}
 
-.empty {
+/* 操作按钮：常驻但低调（描边按钮在灰底上本来就轻），hover 该行时才提亮。
+   不用「hover 才出现」——触控板与键盘用户会以为没有这个功能。 */
+.row-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0.72;
+  transition: opacity 0.12s ease;
+}
+
+.taskrow:hover .row-actions,
+.taskrow:focus-within .row-actions {
+  opacity: 1;
+}
+
+.taskrow-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  min-height: 18px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.taskrow-stage {
+  flex: 0 0 auto;
+  color: var(--text-mid);
+}
+
+.taskrow-time {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: #8b919c;
+}
+
+.taskrow-error {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--error);
+}
+
+.taskrow-note {
+  flex: 0 0 auto;
+  color: var(--warn);
+}
+
+/* ---------------------------------------------------- 四段阶段指示 */
+
+.stagedots {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.stagedot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e1e4ea;
+}
+
+.stagedot.is-done {
+  background: #a9c3f5;
+}
+
+/* 当前这一段：加一圈浅色外环，让「在跑」不用靠动效也能看出来
+   （动效在 `prefers-reduced-motion` 下会被关掉，那时就只剩颜色差异） */
+.stagedot.is-active {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgb(47 111 237 / 16%);
+  animation: stagepulse 1.6s ease-in-out infinite;
+}
+
+/* 呼吸而不是闪烁：闪烁的动效在长跑时会变成噪音，用户会想关掉它 */
+@keyframes stagepulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* ------------------------------------------------------------ 进度条 */
+
+.prog {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.prog-track {
+  position: relative;
+  display: block;
+  width: 84px;
+  height: 5px;
+  border-radius: 999px;
+  background: #ebedf1;
+  overflow: hidden;
+}
+
+.prog-bar {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.prog-bar.is-done {
+  background: var(--ok);
+}
+
+/* 「进行中但进度不可知」—— 绝不能渲染成 0%，那会让人以为卡住了（规格 §5） */
+.prog-bar.is-indeterminate {
+  width: 40%;
+  animation: progslide 1.3s ease-in-out infinite;
+}
+
+@keyframes progslide {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(280%);
+  }
+}
+
+.prog-num {
+  min-width: 34px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #8b919c;
+}
+
+.prog-empty {
+  font-size: 11px;
+  color: #b6bcc6;
+}
+
+/* -------------------------------------------------------------- 空态 */
+
+.emptystate {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 32px;
+  gap: 4px;
+  padding: 24px;
   text-align: center;
-  color: var(--text);
-}
-
-.table-wrap {
-  flex: 1 1 auto;
-  overflow: auto;
   background: var(--surface);
 }
 
-table.tasks {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
+.emptystate-icon {
+  margin-bottom: 6px;
+  color: #b7bec9;
 }
 
-table.tasks th,
-table.tasks td {
-  padding: 5px 8px;
-  text-align: left;
-  border-bottom: 1px solid var(--border);
-  vertical-align: middle;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-table.tasks thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
+.emptystate-title {
+  font-size: 14px;
   font-weight: 600;
+  color: var(--text-mid);
+}
+
+.emptystate-desc {
+  max-width: 420px;
+  margin: 4px 0 12px;
   font-size: 12px;
-  color: var(--text-dim);
-  background: var(--surface-2);
-}
-
-table.tasks tbody tr:hover {
-  background: #fafbfd;
-}
-
-/* 行左侧色条：状态一眼可辨，但不像整行染色那样刺眼 */
-table.tasks tbody tr td:first-child {
-  border-left: 3px solid transparent;
-}
-tr.row-active td:first-child {
-  border-left-color: var(--accent);
-}
-tr.row-ok td:first-child {
-  border-left-color: var(--ok);
-}
-tr.row-error td:first-child {
-  border-left-color: var(--error);
-}
-tr.row-warn td:first-child {
-  border-left-color: var(--warn);
-}
-
-.col-id {
-  width: 48px;
+  line-height: 1.7;
   color: var(--text-dim);
 }
-.col-title {
-  width: auto;
-}
-.col-dur,
-.col-elapsed {
-  width: 72px;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-}
-.col-status {
-  width: 92px;
-}
-.col-progress {
-  width: 132px;
-}
-.col-note {
-  width: 190px;
-}
-.col-actions {
-  width: 168px;
-}
 
-.err-text {
-  color: var(--error);
-}
-
-.row-actions {
-  display: flex;
-  gap: 4px;
-}
-
-/* 进度条。`.indeterminate` 用于「进行中但进度不可知」——
-   绝不要渲染成 0%，那会让人以为卡住了（规格 §5）。 */
-.progress {
-  position: relative;
-  /* 高度必须容得下里面的百分比文字（font-size 11 + 行高）。
-     2026-10-26 之前是 14px，而文件后面还有一个 .progress { height: 6px }
-     （那是模型下载条的样式），后出现的同优先级规则把这里压成 6px ⇒
-     文字被裁掉大半。现在下载条已改名 .download-progress，这条独占 .progress。 */
-  height: 20px;
-  border-radius: 4px;
-  background: var(--surface-2);
-  overflow: hidden;
-}
-
-.progress .bar {
-  height: 100%;
-  background: var(--accent);
-  transition: width 0.2s ease;
-}
-
-.progress-text {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  /* 文字压在填充条上：白字 + 深色描边，蓝底和灰底都能看清。
-     不要用 mix-blend-mode —— 它在深色主题下会把文字混成背景色。 */
-  color: #fff;
-  text-shadow: 0 0 2px rgba(0, 0, 0, 0.55);
-  pointer-events: none;
-}
-
-.progress.indeterminate .bar {
-  width: 35%;
-  animation: slide 1.2s ease-in-out infinite;
-}
-
-@keyframes slide {
-  0% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(320%);
-  }
+.emptystate-foot {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: #a2a8b3;
 }
 
 /* ------------------------------------------------------- 日志区 */
 
 .logpanel {
-  flex: 0 0 168px;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
+  min-height: 0;
   border-top: 1px solid var(--border);
   background: var(--surface);
+}
+
+/* 展开时才吃掉 200px。收起状态只有 30px 的标题行 —— 
+   改版前固定 168px 常驻，在 600px 高的窗口里近三成高度给了多数时候不读的内容。 */
+.logpanel.is-open {
+  flex: 0 0 200px;
 }
 
 .logpanel-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 12px;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
   font-size: 12px;
   color: var(--text-dim);
-  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+
+.logpanel-head:hover {
+  background: var(--surface-3);
+}
+
+.logpanel-caret {
+  display: inline-block;
+  font-size: 9px;
+  color: #9aa1ac;
+  transition: transform 0.15s ease;
+}
+
+.logpanel-caret.is-open {
+  transform: rotate(90deg);
+}
+
+.logpanel-title {
+  color: var(--text-mid);
+}
+
+.logpanel-count {
+  color: #a2a8b3;
+}
+
+.logpanel-flag {
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
 }
 
 .logpanel-body {
   flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   padding: 4px 12px 8px;
+  border-top: 1px solid var(--border-soft);
   font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
   font-size: 12px;
-  line-height: 1.45;
+  line-height: 1.5;
 }
 
 .logline {
@@ -380,14 +723,17 @@ tr.row-warn td:first-child {
 }
 
 .log-level {
-  flex: 0 0 48px;
+  flex: 0 0 46px;
   color: var(--text-dim);
   text-transform: uppercase;
-  font-size: 11px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding-top: 1px;
 }
 
 .log-src {
   flex: 0 0 auto;
+  align-self: flex-start;
   padding: 0 4px;
   font-size: 10px;
   color: var(--text-dim);
@@ -398,9 +744,11 @@ tr.row-warn td:first-child {
 .log-debug .log-msg {
   color: var(--text-dim);
 }
+
 .log-warning .log-msg {
   color: var(--warn);
 }
+
 .log-error .log-msg {
   color: var(--error);
 }
@@ -414,8 +762,9 @@ tr.row-warn td:first-child {
   gap: 6px;
   padding: 8px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-2);
+  border-radius: 8px;
+  background: var(--surface-3);
+  box-shadow: var(--shadow-1);
 }
 
 .addtasks textarea {
@@ -424,12 +773,13 @@ tr.row-warn td:first-child {
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--radius);
   resize: vertical;
 }
 
 .addtasks textarea:focus,
-button:focus-visible {
+button:focus-visible,
+.logpanel-head:focus-visible {
   outline: 2px solid #b9cdfa;
   outline-offset: 1px;
 }
@@ -458,8 +808,8 @@ button:focus-visible {
   padding: 18px 20px 14px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 12px 32px rgb(28 31 36 / 18%);
+  border-radius: 10px;
+  box-shadow: 0 24px 64px rgb(16 24 40 / 22%);
 }
 
 .modal h2 {
@@ -494,8 +844,8 @@ button:focus-visible {
   padding: 4px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgb(28 31 36 / 16%);
+  border-radius: 8px;
+  box-shadow: var(--shadow-2);
 }
 
 button.ctxitem {
@@ -521,208 +871,50 @@ button.ctxitem.danger:hover {
   background: #fdf2f2;
 }
 
-/* ---------------------------------------------------------- 设置模态 */
+/* ---------------------------------------------------------- 模型下载条 */
 
-/* 可点的 chip：状态栏里的「模型未安装」。用 button 是为了键盘可达。 */
-button.chip-action {
-  padding: 1px 8px;
-  font-size: 12px;
+/* 设置页用（`.st-*` 之外唯一共用的一段）。**不要用 `.progress` 这个名字** ——
+   它和任务表里的进度组件同名过，靠文件顺序决定谁生效，是 2026-10-26
+   「进度文字被裁」的直接原因。 */
+.download-progress {
+  height: 6px;
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   border-radius: 999px;
-  cursor: pointer;
 }
 
-button.chip-action:hover:not(:disabled) {
-  filter: brightness(0.97);
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s linear;
 }
 
-.modal-lg {
-  width: min(760px, calc(100vw - 48px));
-  max-height: calc(100vh - 64px);
+/* 校验阶段不知道进度 —— 用一条走动的条纹，而不是停在 100% 让人以为卡住 */
+.progress-indeterminate {
+  width: 100% !important;
+  background: repeating-linear-gradient(90deg, var(--accent) 0 10px, #9dbcf8 10px 20px);
+  animation: progress-slide 1s linear infinite;
+}
+
+@keyframes progress-slide {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 20px 0;
+  }
+}
+
+.download-meta {
   display: flex;
-  flex-direction: column;
-}
-
-.settings-body {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  margin: 6px -4px 0;
-  padding: 0 4px;
-}
-
-.settings-section {
-  padding: 10px 0 4px;
-  border-top: 1px solid var(--border);
-}
-
-.settings-section:first-child {
-  border-top: none;
-  padding-top: 0;
-}
-
-.settings-section h3 {
-  margin: 0 0 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-dim);
-  letter-spacing: 0.04em;
-}
-
-.settings-hint {
-  margin: 6px 0 2px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--text-dim);
-}
-
-.settings-hint code,
-.model-path,
-.settings-hint code {
-  font-size: 11px;
-  padding: 0 3px;
-  background: var(--surface-2);
-  border-radius: 3px;
-}
-
-.settings-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin-bottom: 8px;
-}
-
-.field-row {
-  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
-}
-
-.field-row > .field {
-  flex: 1 1 0;
-  min-width: 0;
-}
-
-.field-inline {
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
+  margin-top: 4px;
   font-size: 12px;
 }
 
-.field-label {
-  font-size: 12px;
-  color: var(--text-dim);
-}
-
-.field-hint {
-  margin-left: 6px;
-  font-style: normal;
-  color: var(--text-dim);
-  opacity: 0.8;
-}
-
-.field input[type="text"],
-.field input:not([type]),
-.field input[type="number"],
-.field select {
-  width: 100%;
-  padding: 4px 8px;
-  font: inherit;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-}
-
-.field input:disabled,
-.field select:disabled {
-  color: var(--text-dim);
-  background: var(--surface-2);
-}
-
-.field-pair {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-/* 路径输入 + 「浏览…」按钮：输入框吃掉剩余宽度，按钮不换行 */
-.field-pair > input {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.field-pair > button {
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-
-.baseline-box {
-  margin-top: 6px;
-  padding: 8px 10px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.banner {
-  margin: 4px 0 8px;
-  padding: 6px 10px;
-  font-size: 12px;
-  line-height: 1.5;
-  border-radius: 5px;
-  border: 1px solid;
-}
-
-.banner-warn {
-  color: var(--warn);
-  background: #fff8ec;
-  border-color: #f2d9ac;
-}
-
-.banner-info {
-  color: var(--accent);
-  background: #f0f5ff;
-  border-color: #c7d9fb;
-}
-
-.foot-note {
-  margin-right: auto;
-  font-size: 12px;
-  color: var(--text-dim);
-}
-
-/* ---- 模型面板 ---- */
-
-.model-status {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 8px;
-}
-
-.model-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  min-width: 0;
-}
-
-.model-key {
-  flex: 0 0 34px;
-  color: var(--text-dim);
-}
-
-.model-path {
-  overflow-wrap: anywhere;
-}
-
+/* 设置页残留的小字样式（`ModelPanel` 等仍在用） */
 .model-note {
   margin: 6px 0;
   font-size: 12px;
@@ -742,47 +934,38 @@ button.chip-action:hover:not(:disabled) {
   margin: 8px 0;
 }
 
-/* 模型下载进度条（细条，无文字）。**不要用 .progress 这个名字** ——
-   它和任务表里的进度条同名，靠文件顺序决定谁生效，是 2026-10-26
-   「进度文字被裁」的直接原因。 */
-.download-progress {
-  height: 6px;
-  overflow: hidden;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-}
+/* ------------------------------------------------------------ 窄窗口 */
 
-.progress-fill {
-  height: 100%;
-  background: var(--accent);
-  transition: width 0.2s linear;
-}
-
-/* 校验阶段不知道进度 —— 用一条走动的条纹，而不是停在 100% 让人以为卡住 */
-.progress-indeterminate {
-  width: 100% !important;
-  background: repeating-linear-gradient(
-    90deg,
-    var(--accent) 0 10px,
-    #9dbcf8 10px 20px
-  );
-  animation: progress-slide 1s linear infinite;
-}
-
-@keyframes progress-slide {
-  from {
-    background-position: 0 0;
+/* 800×600 是 `tauri.conf.json` 里的默认尺寸，也是本文件所有宽度取舍的依据。
+   这里只处理「用户把窗口拖得更小」：
+   - 隐藏副标题，给标题腾地方
+   - 状态 chip 只留 GPU（连接状态在异常条里已经有）
+   - 进度条缩窄 */
+@media (max-width: 720px) {
+  .brand-sub {
+    display: none;
   }
-  to {
-    background-position: 20px 0;
+
+  .prog-track {
+    width: 60px;
+  }
+
+  .taskrow-time {
+    display: none;
   }
 }
 
-.download-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 4px;
-  font-size: 12px;
+/* 系统开了「减少动态效果」就不做呼吸与滑动 —— 长跑界面的持续动效对部分人
+   是干扰甚至不适，而这些动效都不是信息本身（颜色与文字已经表达了状态）。 */
+@media (prefers-reduced-motion: reduce) {
+  .stagedot.is-active,
+  .prog-bar.is-indeterminate,
+  .progress-indeterminate {
+    animation: none;
+  }
+
+  .prog-bar.is-indeterminate {
+    width: 100%;
+    opacity: 0.55;
+  }
 }

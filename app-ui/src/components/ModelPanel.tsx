@@ -3,9 +3,14 @@
 // 单独拆出来（而不是塞进 SettingsDialog）有两个原因：
 // 1. 它是**唯一会长时间运行的**设置项，状态机比其它字段复杂得多；
 // 2. 「模型未安装」这个入口会从状态栏直接点进来，将来也可能单独复用。
+//
+// 版式由 `SectionCard` 提供（标题 + 一句说明 + 右侧状态 chip），
+// 内容用 `KeyValue` 排成两行事实 —— 不再用「模型-目录 / 模型-状态」这种
+// 前缀灰字，那在长路径下会把值挤成第二行且对不齐。
 
 import { formatBytes, type ConfigInfo, type DownloadState } from "../worker/types";
 import { DownloadNote, DownloadProgress, isDownloadActive } from "./DownloadProgress";
+import { Disclosure, KeyValue, SectionCard } from "./settings/primitives";
 
 interface Props {
   info: ConfigInfo | null;
@@ -34,29 +39,32 @@ export function ModelPanel({
   const missing = info?.model_missing_files ?? [];
 
   return (
-    <section className="settings-section">
-      <h3>模型</h3>
-
-      <div className="model-status">
-        <div className="model-line">
-          <span className="model-key">目录</span>
-          <code className="model-path">{info?.model_path ?? "（未加载）"}</code>
-        </div>
-        <div className="model-line">
-          <span className="model-key">状态</span>
-          {info?.model_present ? (
-            <span className="chip chip-ok">已就绪</span>
-          ) : (
-            <span className="chip chip-warn">未安装</span>
-          )}
-          {info && info.model_size_bytes > 0 && (
-            <span className="muted">{formatBytes(info.model_size_bytes)}</span>
-          )}
-          {info?.model_present === false && missing.length > 0 && (
-            <span className="muted">缺：{missing.join("、")}</span>
-          )}
-        </div>
-      </div>
+    <SectionCard
+      title="语音转写模型"
+      desc="转写阶段的唯一硬依赖。装好之前，任务会停在「准备模型」这一步。"
+      aside={
+        info?.model_present ? (
+          <span className="chip chip-ok">已就绪</span>
+        ) : (
+          <span className="chip chip-warn">未安装</span>
+        )
+      }
+    >
+      <KeyValue k="目录">
+        <code>{info?.model_path ?? "（未加载）"}</code>
+      </KeyValue>
+      <KeyValue k="体积">
+        {info && info.model_size_bytes > 0 ? (
+          <span className="muted">{formatBytes(info.model_size_bytes)}</span>
+        ) : (
+          <span className="muted">—</span>
+        )}
+      </KeyValue>
+      {info?.model_present === false && missing.length > 0 && (
+        <KeyValue k="缺失">
+          <span className="st-err-text">{missing.join("、")}</span>
+        </KeyValue>
+      )}
 
       {/* 下载进度。总量未知时（服务端没给 Content-Length）不画百分比，
           而不是画一个永远 0% 的条 —— 后者看起来像卡住了。 */}
@@ -64,9 +72,13 @@ export function ModelPanel({
 
       <DownloadNote download={download} />
 
-      <div className="settings-actions">
+      <div className="st-row">
         {running ? (
-          <button className="danger" onClick={onCancelDownload} disabled={download?.phase === "verifying"}>
+          <button
+            className="danger"
+            onClick={onCancelDownload}
+            disabled={download?.phase === "verifying"}
+          >
             取消下载
           </button>
         ) : (
@@ -86,16 +98,20 @@ export function ModelPanel({
         <button onClick={onVerify} disabled={verifying || running || !info?.model_present}>
           {verifying ? "校验中…" : "重新校验 GPU"}
         </button>
-        <button className="mini" onClick={onReload} title="重新读取配置文件与模型状态">
+        <button onClick={onReload} title="重新读取配置文件与模型状态">
           刷新状态
         </button>
       </div>
 
-      <p className="settings-hint">
-        下载源：hf-mirror（可在「运行」里改 <code>download.base_url</code>）。
-        下载完成后会自动做一次真实推理校验；断点续传靠 <code>.part</code> 文件，
-        取消或断网后重新点下载会接着下。
-      </p>
-    </section>
+      <Disclosure summary="下载源与断点续传">
+        <p>
+          下载源：hf-mirror（可在「存储 → 下载行为」改镜像地址）。下载完成后会自动做一次
+          真实推理校验，确认模型真能跑起来，而不只是文件齐了。
+        </p>
+        <p>
+          断点续传靠 <code>.part</code> 文件，取消或断网后重新点下载会接着下。
+        </p>
+      </Disclosure>
+    </SectionCard>
   );
 }

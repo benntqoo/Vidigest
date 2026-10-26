@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Vidigest · 设置页版式预览</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 16px;
+        background: #e9ebf0;
+        font-family: "Microsoft YaHei UI", "Microsoft YaHei", Inter, "Segoe UI", system-ui,
+          sans-serif;
+        font-size: 13px;
+        color: #1c1f24;
+      }
+      .pv-list {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        align-items: flex-start;
+      }
+      /* 预览用：把模态的覆盖层压回文档流，这样一次能看一屏或全部 */
+      .pv-cell .modal-backdrop {
+        position: static;
+        inset: auto;
+        display: block;
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/preview.tsx"></script>
+  </body>
+</html>

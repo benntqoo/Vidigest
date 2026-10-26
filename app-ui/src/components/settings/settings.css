@@ -1,0 +1,804 @@
+/* 设置页版式。
+ *
+ * 三条纪律（改版后新增，破坏其中一条就会退回「工程 demo」观感）：
+ * 1. **一层容器**：内容区只允许出现 `.st-card`，不再有「section + h3 + 分割线」
+ *    那种等权堆叠 —— 等权堆叠是「每块都重要」的视觉谎言，实际等于「没有层级」。
+ * 2. **控件宽度由语义决定**：路径占满、数字 120px、下拉按内容。改版前所有控件
+ *    都是 100%，于是一个「端口」输入框有 600px 宽 —— 这是最廉价的失分项。
+ * 3. **提示在字段下方、字号小一档、颜色浅一档**。字段说明不再插在标签后面
+ *    跟标签抢行（改版前 `em.field-hint` 就挂在标签里，长提示会把标签挤换行）。
+ */
+
+.st-modal {
+  width: min(940px, calc(100vw - 32px));
+  height: min(690px, calc(100vh - 40px));
+  padding: 0;
+  overflow: hidden;
+  border-radius: 10px;
+  box-shadow:
+    0 24px 64px rgb(16 24 40 / 22%),
+    0 2px 8px rgb(16 24 40 / 8%);
+}
+
+.st-shell {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------------ 左导航 */
+
+.st-nav {
+  flex: 0 0 172px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 8px;
+  background: #f4f5f8;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.st-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 9px;
+  font: inherit;
+  font-size: 13px;
+  color: #454b56;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.st-nav-item:hover:not(.is-active) {
+  color: var(--text);
+  background: rgb(28 31 36 / 5%);
+}
+
+.st-nav-item.is-active {
+  color: var(--text);
+  font-weight: 600;
+  background: var(--surface);
+  border-color: #e6e8ec;
+  box-shadow: 0 1px 2px rgb(16 24 40 / 5%);
+}
+
+/* 选中态的左侧色条：比整块染色安静，但扫一眼就知道「我在哪」 */
+.st-nav-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
+}
+
+.st-nav-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-icon {
+  flex: 0 0 auto;
+  color: #7a828f;
+}
+
+.st-nav-item.is-active .st-icon {
+  color: var(--accent);
+}
+
+.st-nav-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.st-nav-dot-dirty {
+  background: var(--accent);
+}
+
+.st-nav-dot-attention {
+  background: var(--warn);
+}
+
+/* ------------------------------------------------------------------ 右侧 */
+
+.st-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--surface);
+}
+
+.st-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 20px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.st-head-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.st-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.st-head-sub {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-close {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.st-close:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.st-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 20px 18px;
+  background: #f5f6f9;
+  scrollbar-width: thin;
+}
+
+.st-body::-webkit-scrollbar {
+  width: 10px;
+}
+
+.st-body::-webkit-scrollbar-thumb {
+  background: #d6d9e0;
+  border: 3px solid #f5f6f9;
+  border-radius: 999px;
+}
+
+.st-body::-webkit-scrollbar-thumb:hover {
+  background: #c3c7d0;
+}
+
+/* 只读 / 保存中这类整块状态：常驻在标题下方，不随内容滚走 */
+.st-status-slot {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 20px;
+}
+
+.st-status-slot:not(:empty) {
+  padding-top: 10px;
+}
+
+/* ------------------------------------------------------------------ 卡片 */
+
+.st-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.st-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgb(16 24 40 / 4%);
+}
+
+.st-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px 0;
+}
+
+.st-card-heading {
+  min-width: 0;
+}
+
+.st-card-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.st-card-desc {
+  margin: 3px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+.st-card-aside {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 1px;
+}
+
+.st-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 14px;
+}
+
+/* ------------------------------------------------------------------ 字段 */
+
+.st-grid {
+  display: grid;
+  gap: 12px 16px;
+}
+
+.st-grid-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.st-grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.st-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.st-label-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 16px;
+}
+
+.st-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #3a4049;
+}
+
+.st-control {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.st-control > .st-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.st-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+.st-hint code {
+  padding: 0 3px;
+  font-size: 11px;
+  background: var(--surface-2);
+  border-radius: 3px;
+}
+
+.st-input {
+  height: 30px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid #d3d7de;
+  border-radius: 6px;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.st-input::placeholder {
+  color: #a2a8b3;
+}
+
+.st-input:hover:not(:disabled) {
+  border-color: #c0c5cf;
+}
+
+.st-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(47 111 237 / 14%);
+}
+
+.st-input:disabled {
+  color: #8b919b;
+  background: #f5f6f8;
+  border-color: #e2e5ea;
+}
+
+.st-input-mono {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
+/* 数字框：右对齐 + 定宽。数字左对齐且占满整行是「表单没做完」的典型信号。 */
+.st-input-num {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.st-select {
+  appearance: none;
+  width: 100%;
+  max-width: 300px;
+  padding-right: 26px;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%236b7280' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 10px 6px;
+  cursor: pointer;
+}
+
+.st-select:disabled {
+  cursor: not-allowed;
+}
+
+.st-browse {
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+  color: #3a4049;
+  white-space: nowrap;
+  background: var(--surface);
+  border: 1px solid #d3d7de;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.st-browse:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.st-browse:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 「列 × 行」这类双数字组合 */
+.st-num-pair {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.st-num-pair-sep {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* 一行按钮 / 一行紧凑内容 */
+.st-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 普通模态里的一组字段（首次运行引导用） */
+.st-form-block {
+  margin: 10px 0;
+}
+
+.modal .st-callout {
+  margin: 8px 0;
+}
+
+.modal .st-hint {
+  margin-top: 8px;
+}
+
+.st-row button {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12.5px;
+  border-radius: 6px;
+}
+
+/* ------------------------------------------------------------------ 开关 */
+
+.st-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.st-toggle.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* 透明覆盖层：保留原生 checkbox 的键盘与读屏语义，视觉交给兄弟节点 */
+.st-toggle-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.st-toggle-track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 20px;
+  margin-top: 1px;
+  background: #cdd2da;
+  border-radius: 999px;
+  transition: background 0.16s ease;
+}
+
+.st-toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgb(16 24 40 / 25%);
+  transition: transform 0.16s ease;
+}
+
+.st-toggle-input:checked + .st-toggle-track {
+  background: var(--accent);
+}
+
+.st-toggle-input:checked + .st-toggle-track .st-toggle-thumb {
+  transform: translateX(14px);
+}
+
+.st-toggle-input:focus-visible + .st-toggle-track {
+  box-shadow: 0 0 0 3px rgb(47 111 237 / 22%);
+}
+
+.st-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.st-toggle-label {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.st-toggle-hint {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+/* ------------------------------------------------------------------ 其它 */
+
+.st-callout {
+  display: flex;
+  gap: 9px;
+  padding: 9px 11px;
+  font-size: 12px;
+  line-height: 1.55;
+  border: 1px solid;
+  border-radius: 7px;
+}
+
+.st-callout-bar {
+  flex: 0 0 auto;
+  width: 3px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.75;
+}
+
+/* 正文要能收缩，否则长句（带路径、带错误码）会把父容器撑宽而不是换行 */
+.st-callout-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 缺失文件列表（`ModelPanel`）。
+   ⚠️ 这条原来是 App.css 里的 `.err-text`，2026-10-27 主界面改版重写 App.css
+   时被一起删掉了 —— 设置页的缺失文件因此变成普通黑字。现在带 `st-` 前缀
+   收回本文件，主界面与设置页的类名不再有交集。 */
+.st-err-text {
+  color: var(--error);
+}
+
+.st-callout-info {
+  color: #2b5bb8;
+  background: #f2f6fe;
+  border-color: #c9d9f8;
+}
+
+.st-callout-warn {
+  color: #9a5b06;
+  background: #fff9ee;
+  border-color: #f0d9ab;
+}
+
+.st-callout-error {
+  color: #b42318;
+  background: #fef4f3;
+  border-color: #f3c6c0;
+}
+
+.st-callout-ok {
+  color: #15703a;
+  background: #f3fbf6;
+  border-color: #bfe5cd;
+}
+
+.st-kv {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  min-width: 0;
+}
+
+.st-kv-k {
+  flex: 0 0 52px;
+  color: var(--text-dim);
+}
+
+.st-kv-v {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.st-kv-v code {
+  overflow-wrap: anywhere;
+  font-size: 11.5px;
+  color: #3a4049;
+}
+
+.st-more {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.st-more > summary {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.st-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.st-more > summary::before {
+  content: "▸";
+  font-size: 9px;
+  transition: transform 0.12s ease;
+}
+
+.st-more[open] > summary::before {
+  content: "▾";
+}
+
+.st-more > summary:hover {
+  color: var(--text);
+}
+
+.st-more-body {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  line-height: 1.65;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+
+.st-more-body p {
+  margin: 0 0 6px;
+}
+
+.st-more-body p:last-child {
+  margin-bottom: 0;
+}
+
+/* 后端优先级阶梯：本地 → 云 → 无。当前生效的一档高亮，其余降权。 */
+.st-chain {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.st-chain-step {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 7px 9px;
+  background: #f7f8fa;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.st-chain-step.is-active {
+  background: #f2f6fe;
+  border-color: #8fb3f7;
+}
+
+.st-chain-step.is-missing {
+  background: #fffaf0;
+  border-color: #f0d9ab;
+}
+
+.st-chain-k {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.st-chain-step.is-active .st-chain-k {
+  color: var(--accent);
+}
+
+.st-chain-v {
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.st-chain-arrow {
+  flex: 0 0 auto;
+  align-self: center;
+  font-size: 12px;
+  color: #9aa1ac;
+}
+
+/* 底部操作栏 */
+.st-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
+.st-foot-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--text-dim);
+  min-width: 0;
+}
+
+.st-foot-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+.st-foot-status.is-dirty {
+  color: #9a5b06;
+}
+
+.st-foot-status.is-error {
+  color: var(--error);
+}
+
+.st-foot button {
+  height: 30px;
+  padding: 0 14px;
+  font-size: 12.5px;
+  border-radius: 6px;
+}
+
+/* 窄窗口（默认 800×600 的 Tauri 窗口就会命中）：栅格降级、导航收窄 */
+@media (max-width: 900px) {
+  .st-modal {
+    width: calc(100vw - 24px);
+    height: calc(100vh - 24px);
+  }
+
+  .st-nav {
+    flex-basis: 148px;
+  }
+
+  /* 只把三列降到两列。两列本身在 ~600px 内容宽度下仍然够用，
+     直接塌成一列会让「设备与并发」这种 6 字段卡占两屏 —— 800×600 的默认窗口里
+     等于永远在滚动。真正的单列留到 700px 以下。 */
+  .st-grid-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .st-body {
+    padding: 12px 14px 16px;
+  }
+
+  .st-head,
+  .st-foot {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .st-status-slot {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+}
+
+@media (max-width: 700px) {
+  .st-grid-3,
+  .st-grid-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .st-nav {
+    flex-basis: 132px;
+  }
+}

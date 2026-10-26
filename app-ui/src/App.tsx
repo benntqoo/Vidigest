@@ -13,14 +13,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 import "./App.css";
-import { AddTasksBar } from "./components/AddTasksBar";
 import { LogPanel, type LogEntry } from "./components/LogPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
-import { StatusBar } from "./components/StatusBar";
+import { TopBar } from "./components/TopBar";
 import { TaskTable } from "./components/TaskTable";
 import { DirsGuide } from "./components/DirsGuide";
 import * as api from "./worker/client";
 import type { CloseRequest } from "./worker/client";
+import { summarize } from "./components/mainLayout";
 import type {
   AppConfig,
   ConfigInfo,
@@ -69,6 +69,8 @@ function App() {
   const [verifying, setVerifying] = useState(false);
   /** 首启工作目录引导是否已被「稍后再说」收起（只在本进程内有效，重启再问） */
   const [guideDismissed, setGuideDismissed] = useState(false);
+  /** 添加链接输入区是否展开。提到这里是因为空队列中间的按钮也要打开同一个输入框 */
+  const [composerOpen, setComposerOpen] = useState(false);
   /** 抖音登录状态（有头窗口里扫码的进度），null = 还没点过 */
   const [douyinLogin, setDouyinLogin] = useState<{ state: string; message: string } | null>(null);
 
@@ -439,6 +441,8 @@ function App() {
     [tasks],
   );
 
+  const queue = useMemo(() => summarize(ordered), [ordered]);
+
   const busy = worker?.state === "ready";
 
   // worker 不在了（起不来或崩了）才需要这个按钮。
@@ -449,75 +453,31 @@ function App() {
 
   return (
     <div className="app">
-      <header className="toolbar">
-        <span className="brand">Vidigest</span>
-        <AddTasksBar
-          disabled={!busy}
-          onSubmit={(text) => {
-            // 抽 URL 是 Python 侧的责任（`urls.extract_many`），前端不做正则，
-            // 否则两处规则会打架。这里只按行传过去。
-            const lines = text
-              .split(/\r?\n/)
-              .map((s) => s.trim())
-              .filter(Boolean);
-            run("加入队列", api.addTasks(lines));
-          }}
-        />
-
-        <span className="divider" />
-
-        <button
-          className="primary"
-          disabled={!busy || pipeline === "running"}
-          onClick={() => run("开始", api.startPipeline())}
-          title="只入队未完成且非失败的任务（failed / cancelled 需在该行点「重试」）"
-        >
-          开始
-        </button>
-        <button
-          disabled={!busy || pipeline !== "running"}
-          onClick={() => run("暂停", api.pausePipeline())}
-          title="已在跑的任务会跑完当前阶段为止"
-        >
-          暂停
-        </button>
-        <button
-          disabled={!busy || pipeline !== "paused"}
-          onClick={() => run("继续", api.resumePipeline())}
-        >
-          继续
-        </button>
-
-        {/*
-          恢复入口：worker 起不来 / 崩了之后，上面四个按钮全是灰的，
-          这里若也没有，用户唯一的选择就是关掉整个应用（故障态验证发现的第 3 个缺陷）。
-          样式用 danger 是为了让它在一排灰按钮里显出来 —— 此刻它是唯一能做的事。
-        */}
-        {canRestart && (
-          <button
-            className="danger"
-            onClick={() => run("重启 worker", api.restartWorker())}
-            title={`${worker?.detail ?? ""}\n\n不用关闭应用，直接重来一遍`}
-          >
-            重启 worker
-          </button>
-        )}
-
-        <span className="spacer" />
-
-        <button
-          className="mini"
-          onClick={openSettings}
-          title="设置：模型 / 路径 / 运行 / 转写 / 抽帧 / 汇总 / 下载"
-        >
-          设置
-        </button>
-        <button className="mini" onClick={() => refreshTasks()} title="重新拉取任务表">
-          刷新
-        </button>
-      </header>
-
-      <StatusBar worker={worker} pipeline={pipeline} onOpenSettings={openSettings} />
+      {/* 工具栏（含添加链接、主操作位、设置入口）在 `components/TopBar.tsx`。
+          可用性判据仍在这里算 —— 它依赖 worker 状态的三态语义。 */}
+      <TopBar
+        worker={worker}
+        busy={busy}
+        pipeline={pipeline}
+        canRestart={canRestart}
+        failedCount={queue.failed}
+        composerOpen={composerOpen}
+        onComposerOpenChange={setComposerOpen}
+        onAddTasks={(text) => {
+          // 抽 URL 是 Python 侧的责任（`urls.extract_many`），前端不做正则，
+          // 否则两处规则会打架。这里只按行传过去。
+          const lines = text
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+          run("加入队列", api.addTasks(lines));
+        }}
+        onStart={() => run("开始", api.startPipeline())}
+        onPause={() => run("暂停", api.pausePipeline())}
+        onResume={() => run("继续", api.resumePipeline())}
+        onRestart={() => run("重启 worker", api.restartWorker())}
+        onOpenSettings={openSettings}
+      />
 
       <TaskTable
         tasks={ordered}
@@ -527,6 +487,7 @@ function App() {
         onOpenDir={(path) =>
           revealItemInDir(path).catch((e) => pushLog("error", `打开目录失败 ${path}：${e}`))
         }
+        onAddClick={() => setComposerOpen(true)}
         onOpenTranscript={(outDir) => {
           const p = transcriptPath(outDir);
           // 用系统默认程序打开（.txt → 记事本）。失败时把路径打进日志 ——
