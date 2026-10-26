@@ -640,6 +640,18 @@ button.chip-action:hover:not(:disabled) {
 .field-pair {
   display: flex;
   gap: 6px;
+  align-items: center;
+}
+
+/* 路径输入 + 「浏览…」按钮：输入框吃掉剩余宽度，按钮不换行 */
+.field-pair > input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.field-pair > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .baseline-box {

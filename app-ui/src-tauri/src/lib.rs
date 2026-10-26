@@ -20,6 +20,10 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // 系统目录选择器：首启引导与设置页的「浏览…」都靠它。
+        // 少了这一行 + capabilities 里的 `dialog:default`，前端调用会报
+        // `dialog.open not allowed`（构建期不报错，运行时才炸）。
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // worker 在 setup 里就启动，不等前端 ready —— 窗口渲染与 Python 冷启动并行，
             // 端到端少等几百毫秒。前端挂载后用 `worker_state` 拉一次快照补齐状态。

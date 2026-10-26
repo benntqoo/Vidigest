@@ -11,6 +11,8 @@
 
 import { useState } from "react";
 
+import { pickDirectory } from "../worker/pickDir";
+
 interface Props {
   /** 配置里的 work_dir（程序自动挑的） */
   suggestedWork: string;
@@ -60,20 +62,32 @@ export function DirsGuide({
           </p>
         )}
 
-        <label className="field">
+        <div className="field">
           <span className="field-label">
             工作目录
             <em className="field-hint">下载的视频、抽出的音频和截图放这里；批量跑能到几十 GB</em>
           </span>
-          <input
-            value={work}
-            disabled={busy}
-            spellCheck={false}
-            onChange={(e) => setWork(e.target.value)}
-          />
-        </label>
+          <div className="field-pair">
+            <input
+              value={work}
+              disabled={busy}
+              spellCheck={false}
+              onChange={(e) => setWork(e.target.value)}
+            />
+            <button
+              type="button"
+              disabled={busy}
+              onClick={async () => {
+                const picked = await pickDirectory(work, "选择工作目录");
+                if (picked) setWork(picked);
+              }}
+            >
+              浏览…
+            </button>
+          </div>
+        </div>
 
-        <label className="field">
+        <div className="field">
           <span className="field-label">
             模型目录
             <em className="field-hint">
@@ -82,13 +96,25 @@ export function DirsGuide({
                 : "还没有模型；确认后可在设置里一键下载（约 2.9 GiB）"}
             </em>
           </span>
-          <input
-            value={model}
-            disabled={busy}
-            spellCheck={false}
-            onChange={(e) => setModel(e.target.value)}
-          />
-        </label>
+          <div className="field-pair">
+            <input
+              value={model}
+              disabled={busy}
+              spellCheck={false}
+              onChange={(e) => setModel(e.target.value)}
+            />
+            <button
+              type="button"
+              disabled={busy}
+              onClick={async () => {
+                const picked = await pickDirectory(model, "选择模型目录");
+                if (picked) setModel(picked);
+              }}
+            >
+              浏览…
+            </button>
+          </div>
+        </div>
 
         {!valid && <p className="banner banner-warn">两个目录都不能为空</p>}
 

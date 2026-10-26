@@ -151,6 +151,13 @@ cmd_release() {
     step "复用已有 worker 产物（--skip-worker）"
     [ -f "$WORKER_EXE" ] || die "没有可复用的产物：$WORKER_EXE
      去掉 --skip-worker，或先跑 ./dev.sh worker"
+    # 守卫：python 侧改过（尤其是 `./dev.sh bump` 会改 rpc.py 的 SERVER_VERSION）
+    # 却复用旧 worker ⇒ 装出来的包「MSI 是 0.2.1、界面显示 0.2.0」，
+    # 正是版本号要解决的那个问题。用 mtime 判：rpc.py 比产物新就拒绝。
+    if [ "$REPO/app/rpc.py" -nt "$WORKER_EXE" ]; then
+      die "app/rpc.py 比 worker 产物新（可能刚 bump 过版本号）——
+     SKIP_WORKER 会打出一个版本自相矛盾的包。直接跑 ./dev.sh release。"
+    fi
     ok "$WORKER_EXE"
   else
     cmd_worker

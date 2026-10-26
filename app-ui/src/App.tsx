@@ -386,6 +386,16 @@ function App() {
     return () => window.clearInterval(id);
   }, [applyingSince, worker?.state, pushLog, refreshConfig]);
 
+  // 每次进入 ready 都拉一次配置 —— **首启引导只能靠这个**。
+  //
+  // 2026-10-26 发现：原先**没有任何地方**在启动时拉配置，`get_config` 只在
+  // 「打开设置」和「下载/保存之后」发。于是首启的「确认两个目录」弹窗要等到
+  // 用户偶然点开设置才出现 —— 用户感知就是「弹窗来得莫名其妙地晚」。
+  // 配置依赖 worker 的 `ready`（YAML 是 Python 读的），所以挂在这个状态上。
+  useEffect(() => {
+    if (worker?.state === "ready") refreshConfig();
+  }, [worker?.state, refreshConfig]);
+
   const ordered = useMemo(
     () => Object.values(tasks).sort((a, b) => a.task_id - b.task_id),
     [tasks],

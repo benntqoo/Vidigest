@@ -19,6 +19,7 @@ import type {
   PipelineState,
 } from "../worker/types";
 import { ModelPanel } from "./ModelPanel";
+import { pickDirectory } from "../worker/pickDir";
 
 interface Props {
   info: ConfigInfo | null;
@@ -198,22 +199,46 @@ export function SettingsDialog({
                 工作目录
                 <em className="field-hint">产物落这里；改完不会迁移已有产物</em>
               </span>
-              <input
-                value={draft.paths.work_dir}
-                disabled={readOnly}
-                onChange={(e) => setPaths("work_dir", e.target.value)}
-              />
+              <div className="field-pair">
+                <input
+                  value={draft.paths.work_dir}
+                  disabled={readOnly}
+                  onChange={(e) => setPaths("work_dir", e.target.value)}
+                />
+                <button
+                  type="button"
+                  disabled={readOnly}
+                  onClick={async () => {
+                    const picked = await pickDirectory(draft.paths.work_dir, "选择工作目录");
+                    if (picked) setPaths("work_dir", picked);
+                  }}
+                >
+                  浏览…
+                </button>
+              </div>
             </label>
             <label className="field">
               <span className="field-label">
                 模型父目录
                 <em className="field-hint">实际路径是它下面的 {draft.runtime.model}</em>
               </span>
-              <input
-                value={draft.paths.model_dir}
-                disabled={readOnly}
-                onChange={(e) => setPaths("model_dir", e.target.value)}
-              />
+              <div className="field-pair">
+                <input
+                  value={draft.paths.model_dir}
+                  disabled={readOnly}
+                  onChange={(e) => setPaths("model_dir", e.target.value)}
+                />
+                <button
+                  type="button"
+                  disabled={readOnly}
+                  onClick={async () => {
+                    const picked = await pickDirectory(draft.paths.model_dir, "选择模型目录");
+                    if (picked) setPaths("model_dir", picked);
+                  }}
+                >
+                  浏览…
+                </button>
+              </div>
             </label>
             <label className="field">
               <span className="field-label">

@@ -95,7 +95,9 @@ def write(version: str) -> int:
         print(f"版本号格式不对：{version!r}，应为 x.y.z（例如 0.2.1）")
         return 1
 
-    VERSION_FILE.write_text(version + "\n", encoding="utf-8")
+    # `newline=""` 不能省：Windows 上 `write_text` 会把 `\n` 翻成 `\r\n`，
+    # 而 git 的行尾规则会因此拒绝提交（`CRLF would be replaced by LF`）。
+    io.open(VERSION_FILE, "w", encoding="utf-8", newline="").write(version + "\n")
     print(f"VERSION → {version}")
     for rel, pattern in TARGETS:
         path = ROOT / rel

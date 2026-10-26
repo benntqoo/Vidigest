@@ -49,7 +49,7 @@ from app.models.config import (
 from app.models.task import Task, TaskStatus
 
 PROTOCOL_VERSION = 1
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.2.1"
 
 #: 内部事件名 → 协议事件名。
 #: 调度器不感知协议，它只报「发生了什么」；名字翻译在这里做，与 `STAGE_LABELS` 同理。
