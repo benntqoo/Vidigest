@@ -159,6 +159,29 @@ def main() -> int:
         record("未知 section 有警告且不写脏数据", unknown_warned and "no_such_section" not in after,
                f"warnings={len(warns)}")
 
+        # 3b. 安装目录校验：打包产物里 install_dir 必须非空，且指进去要被拒。
+        #     这条只能在**打包产物**上验 —— 源码运行时 install_dir 刻意是 None
+        #     （开发布局里 work/ 就在仓库根），rpc_smoke 测不到这个分支。
+        install_dir = ev.get("install_dir")
+        record(
+            "打包产物 install_dir 非空",
+            isinstance(install_dir, str) and bool(install_dir),
+            f"install_dir={install_dir}",
+        )
+        if isinstance(install_dir, str) and install_dir:
+            before3 = cfg.read_text(encoding="utf-8")
+            c.send(
+                "set_config",
+                {"patch": {"paths": {"work_dir": str(Path(install_dir) / "work")}}},
+            )
+            f = c.wait({"config_saved", "error"}, timeout=15)
+            code = (((f or {}).get("data") or {}).get("code")) or ""
+            record(
+                "work_dir 指进安装目录 → E_DIR_IN_INSTALL 且不写盘",
+                code == "E_DIR_IN_INSTALL" and cfg.read_text(encoding="utf-8") == before3,
+                f"code={code}",
+            )
+
         # 4. verify_env 可触发
         c.send("verify_env")
         started = c.wait({"env_verify_started", "error"}, timeout=15)

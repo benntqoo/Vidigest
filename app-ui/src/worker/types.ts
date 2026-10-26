@@ -227,6 +227,12 @@ export interface ConfigInfo {
    * 首项 `code === ""` 表示「自动检测」。
    */
   languages: { code: string; label: string }[];
+  /**
+   * 安装目录；`null` = 源码运行（此时不校验「目录不能在安装目录里」，
+   * 因为开发布局里 `work/` 本来就在仓库根）。
+   * 界面用它做即时提示，后端 `set_config` 用同一条规则做硬拦。
+   */
+  install_dir: string | null;
   model_path: string;
   model_present: boolean;
   model_missing_files: string[];

@@ -311,6 +311,8 @@ def run_main_flow(env: dict[str, str]) -> Host:
         "model_missing_files",
         "model_size_bytes",
         "read_only_fields",
+        "languages",
+        "install_dir",
         "api_key_env",
         "api_key_present",
         "download",
@@ -319,6 +321,14 @@ def run_main_flow(env: dict[str, str]) -> Host:
         "get_config 返回全量配置 + 模型元信息",
         cfg_evt is not None and needed.issubset(cd.keys()) and isinstance(cd.get("config"), dict),
         f"缺字段={sorted(needed - set(cd.keys()))} model_present={cd.get('model_present')}",
+    )
+    # 源码运行时 install_dir 必须是 null：非 null 会让「目录不能在安装目录里」的
+    # 硬校验生效，而开发布局里 work/ 本来就在仓库根 —— 那样连 `./dev.sh check`
+    # 自己都会踩到。
+    host.record(
+        "源码运行 install_dir=None（不启用安装目录校验）",
+        cd.get("install_dir") is None,
+        f"install_dir={cd.get('install_dir')!r}",
     )
 
     # ---- 设置：set_config 的安全边界 ----
@@ -664,6 +674,38 @@ def check_model_dir_defaults(tmp: str, judgements: list[tuple[str, bool, str]]) 
         paths_mod.is_frozen = original  # type: ignore[assignment]
 
 
+def check_dir_guard(judgements: list[tuple[str, bool, str]]) -> None:
+    """`dir_is_inside` 的边界 —— 「不能把目录放进安装目录」这条规则的底座。
+
+    最容易写错的两个地方都在这几条里：
+    - 裸 `startswith` 会把 `Vidigest-old` 当成 `Vidigest` 的子目录 ⇒ **误拒**合法路径；
+    - 只拼分隔符再比会漏掉「目录正好等于安装目录」⇒ **漏放**最该拦的那一种。
+    """
+    from app.core.paths import dir_is_inside
+
+    install = r"C:\Program Files\Vidigest"
+    cases = [
+        ("等于安装目录", dir_is_inside(install, install), True),
+        ("安装目录下的子目录", dir_is_inside(install + r"\work", install), True),
+        ("嵌套更深", dir_is_inside(install + r"\work\2026\01", install), True),
+        ("大小写不同", dir_is_inside(r"c:\program files\VIDIGEST\work", install), True),
+        ("正斜杠", dir_is_inside("C:/Program Files/Vidigest/work", install), True),
+        ("尾部反斜杠", dir_is_inside(install + "\\", install), True),
+        ("同前缀的兄弟目录", dir_is_inside(install + "-old\\work", install), False),
+        ("同前缀的兄弟文件", dir_is_inside(r"C:\Program Files\Vidigest2", install), False),
+        ("别的盘", dir_is_inside(r"D:\Vidigest\work", install), False),
+        ("父目录本身", dir_is_inside(r"C:\Program Files", install), False),
+    ]
+    bad = [name for name, got, want in cases if got != want]
+    judgements.append(
+        (
+            "目录归属判断 dir_is_inside（10 个边界）",
+            not bad,
+            f"不符={bad}" if bad else f"{len(cases)} 个用例全对",
+        )
+    )
+
+
 def main() -> int:
     print("IPC 协议冒烟测试 —— docs/IPC协议规格.md §9\n")
 
@@ -676,6 +718,7 @@ def main() -> int:
     check_language_table(host.judgements)
     check_work_dir_defaults(tmp, host.judgements)
     check_model_dir_defaults(tmp, host.judgements)
+    check_dir_guard(host.judgements)
 
     run_eof_flow(env, host.judgements)
 

@@ -10,19 +10,27 @@
 
 import { useState } from "react";
 
+import { dirIsInside } from "../worker/pathGuard";
+
 interface Props {
   /** 当前配置里的 work_dir（程序自动挑的） */
   suggested: string;
+  /** 安装目录；`null` = 源码运行，不校验 */
+  installDir: string | null;
   /** 保存中：worker 正在重启 */
   busy: boolean;
   onConfirm: (path: string) => void;
   onLater: () => void;
 }
 
-export function WorkDirGuide({ suggested, busy, onConfirm, onLater }: Props) {
+export function WorkDirGuide({ suggested, installDir, busy, onConfirm, onLater }: Props) {
   const [value, setValue] = useState(suggested);
   const trimmed = value.trim();
   const valid = trimmed.length > 0;
+  // 放进安装目录的三个后果：Program Files 只读、卸载/升级连产出一起删、
+  // UAC 虚拟化可能把写入悄悄重定向。所以这里直接拦住，而不是让他选了再报错。
+  const inInstall = dirIsInside(trimmed, installDir);
+  const blocked = !valid || inInstall;
 
   return (
     <div className="modal-backdrop">
@@ -47,6 +55,12 @@ export function WorkDirGuide({ suggested, busy, onConfirm, onLater }: Props) {
         </label>
 
         {!valid && <p className="banner banner-warn">目录不能为空</p>}
+        {inInstall && (
+          <p className="banner banner-warn">
+            不能放在安装目录里（{installDir}）。那里是只读的，而且卸载或升级会连同产出一起删掉。
+            请换一个独立目录，例如 D:\Vidigest\work。
+          </p>
+        )}
 
         <div className="modal-actions">
           <button type="button" onClick={onLater} disabled={busy}>
@@ -55,7 +69,7 @@ export function WorkDirGuide({ suggested, busy, onConfirm, onLater }: Props) {
           <button
             type="button"
             className="primary"
-            disabled={!valid || busy}
+            disabled={blocked || busy}
             onClick={() => onConfirm(trimmed)}
           >
             {busy ? "正在应用…" : "用这个目录"}

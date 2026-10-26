@@ -152,6 +152,30 @@ def pick_default_model_dir(model: str, roots: list[Path] | None = None) -> Path:
         return drives[0] / APP_DIR_NAME / "models"
     return app_data_dir() / "models"
 
+def dir_is_inside(child: str | Path, parent: str | Path) -> bool:
+    """`child` 是否等于 `parent` 或位于其下（Windows 语义：大小写不敏感）。
+
+    为什么不用 `str(child).startswith(str(parent))`：`C:\\Program Files\\Vidigest-old`
+    以 `C:\\Program Files\\Vidigest` 开头但**并不在它里面**。裸 `startswith` 会把它
+    误判成冲突，用户明明选了合法目录却被拒；反过来若拼上分隔符再比又漏掉「相等」。
+    所以两件事分开做：先比规范化后的相等，再比「parent + 分隔符」前缀。
+
+    用途见 `rpc.py::_cmd_set_config`：`work_dir` / `model_dir` 不允许落在安装目录里。
+    """
+    try:
+        a = Path(child).expanduser().resolve(strict=False)
+        b = Path(parent).expanduser().resolve(strict=False)
+    except OSError:  # 极端路径（超长 / 保留名）——退回字符串比较
+        a = Path(str(child).strip().rstrip("\\/"))
+        b = Path(str(parent).strip().rstrip("\\/"))
+    # 用 parts 比较而不是字符串：`normcase` 处理 Windows 的大小写与斜杠差异。
+    a_parts = [p.lower() for p in a.parts]
+    b_parts = [p.lower() for p in b.parts]
+    if not b_parts:
+        return False
+    return a_parts[: len(b_parts)] == b_parts
+
+
 def pick_default_work_dir(system_drive: str | None = None) -> Path:
     """首启时挑一个放工作文件的地方：优先**非系统盘**，取剩余空间最大的那块。
 

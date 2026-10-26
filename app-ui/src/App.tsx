@@ -490,6 +490,7 @@ function App() {
         configInfo?.config.paths.work_dir_confirmed === false && (
           <WorkDirGuide
             suggested={configInfo.config.paths.work_dir}
+            installDir={configInfo.install_dir}
             busy={applyingSince !== null}
             onConfirm={(workDir) => {
               // **不在这里关掉引导**：保存可能失败（目录不可写 / 非法路径），

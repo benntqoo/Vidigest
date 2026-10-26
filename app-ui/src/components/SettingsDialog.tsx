@@ -19,6 +19,7 @@ import type {
   PipelineState,
 } from "../worker/types";
 import { ModelPanel } from "./ModelPanel";
+import { dirIsInside } from "../worker/pathGuard";
 
 interface Props {
   info: ConfigInfo | null;
@@ -109,6 +110,12 @@ export function SettingsDialog({
   const emptyRequired =
     !patch || !patch.paths.work_dir || !patch.paths.model_dir;
 
+  // 目录不能落在安装目录里（后端 `set_config` 会硬拦，这里先给即时提示）。
+  // `info.install_dir` 为 null（源码运行）时这两条恒为 false。
+  const workInInstall = !!patch && dirIsInside(patch.paths.work_dir, info?.install_dir);
+  const modelInInstall = !!patch && dirIsInside(patch.paths.model_dir, info?.install_dir);
+  const pathInInstall = workInInstall || modelInInstall;
+
   if (!info || !draft) {
     // worker 没起来时 `get_config` 根本没有响应 —— 不能只写「正在读取配置…」，
     // 那会让用户以为卡住了。如实说状态，并给一个重试入口。
@@ -192,6 +199,12 @@ export function SettingsDialog({
 
           <section className="settings-section">
             <h3>路径</h3>
+            {pathInInstall && (
+              <p className="banner banner-warn">
+                工作目录 / 模型目录不能在安装目录里（{info?.install_dir}）：
+                那里对普通用户只读，而且卸载或升级会连同产出、模型一起删掉。
+              </p>
+            )}
             <label className="field">
               <span className="field-label">
                 工作目录
@@ -590,13 +603,14 @@ export function SettingsDialog({
         <div className="modal-actions">
           <span className="foot-note">
             {emptyRequired && "工作目录与模型目录不能为空"}
-            {!emptyRequired && dirty && !confirmBaseline && "有未保存的修改"}
-            {!emptyRequired && !dirty && "没有改动"}
+            {!emptyRequired && pathInInstall && "目录不能放在安装目录里"}
+            {!emptyRequired && !pathInInstall && dirty && !confirmBaseline && "有未保存的修改"}
+            {!emptyRequired && !pathInInstall && !dirty && "没有改动"}
           </span>
           <button onClick={onClose}>关闭</button>
           <button
             className={confirmBaseline ? "danger" : "primary"}
-            disabled={readOnly || !dirty || emptyRequired || applying}
+            disabled={readOnly || !dirty || emptyRequired || pathInInstall || applying}
             onClick={() => {
               if (!patch) return;
               if (baselineChanged && !confirmBaseline) {
