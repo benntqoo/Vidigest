@@ -297,8 +297,12 @@ tr.row-warn td:first-child {
    绝不要渲染成 0%，那会让人以为卡住了（规格 §5）。 */
 .progress {
   position: relative;
-  height: 14px;
-  border-radius: 3px;
+  /* 高度必须容得下里面的百分比文字（font-size 11 + 行高）。
+     2026-10-26 之前是 14px，而文件后面还有一个 .progress { height: 6px }
+     （那是模型下载条的样式），后出现的同优先级规则把这里压成 6px ⇒
+     文字被裁掉大半。现在下载条已改名 .download-progress，这条独占 .progress。 */
+  height: 20px;
+  border-radius: 4px;
   background: var(--surface-2);
   overflow: hidden;
 }
@@ -315,10 +319,14 @@ tr.row-warn td:first-child {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
-  color: var(--text);
-  mix-blend-mode: luminosity;
+  /* 文字压在填充条上：白字 + 深色描边，蓝底和灰底都能看清。
+     不要用 mix-blend-mode —— 它在深色主题下会把文字混成背景色。 */
+  color: #fff;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
 }
 
 .progress.indeterminate .bar {
@@ -734,7 +742,10 @@ button.chip-action:hover:not(:disabled) {
   margin: 8px 0;
 }
 
-.progress {
+/* 模型下载进度条（细条，无文字）。**不要用 .progress 这个名字** ——
+   它和任务表里的进度条同名，靠文件顺序决定谁生效，是 2026-10-26
+   「进度文字被裁」的直接原因。 */
+.download-progress {
   height: 6px;
   overflow: hidden;
   background: var(--surface-2);

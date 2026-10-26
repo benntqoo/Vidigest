@@ -81,7 +81,7 @@ export function ModelPanel({
           而不是画一个永远 0% 的条 —— 后者看起来像卡住了。 */}
       {running && (
         <div className="download-box">
-          <div className="progress">
+          <div className="download-progress">
             <div
               className={`progress-fill${download?.phase === "verifying" ? " progress-indeterminate" : ""}`}
               style={{ width: `${Math.round(pct * 100)}%` }}
