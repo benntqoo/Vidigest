@@ -913,6 +913,138 @@ def check_asset_packs(tmp: str, judgements: list[tuple[str, bool, str]]) -> None
     )
 
 
+def check_local_ai_autoconfig(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
+    """下载完自动把 llama-server 路径写进配置。
+
+    守的是 2026-10-27 那次反馈本身：文件下好了、后端也确实找得到，但配置里
+    `server_path` 仍是 null ⇒ 设置页显示一个空输入框 ⇒ 用户据此判断「没配上」。
+    「留空 = 自动查找」这个约定如果只活在代码里，界面就得把它画出来，
+    并且在下完之后主动填进去。
+    """
+    import os
+
+    from app.core import ai_backend
+    from app.models.config import Config
+
+    home = Path(tmp) / "autocfg"
+    vdir = home / "models" / "qwen3-vl-2b"
+    (vdir / "llama").mkdir(parents=True, exist_ok=True)
+    server = vdir / "llama" / ("llama-server.exe" if os.name == "nt" else "llama-server")
+    server.write_bytes(b"x")
+    (vdir / "Qwen3-VL-2B-Instruct-Q4_K_M.gguf").write_bytes(b"x")
+    (vdir / "mmproj-BF16.gguf").write_bytes(b"x")
+
+    cfg = Config.from_dict(
+        {"paths": {"model_dir": str(home / "models")}, "local_ai": {"enabled": False}},
+        root=home,
+    )
+    # 前提：落点必须真的是我们造的那个目录，否则下面几条全在测空气
+    same_dir = cfg.vision_model_path() == vdir
+    r = ai_backend.autoconfigure(cfg, enable=True)
+    judgements.append(
+        (
+            "自动配置：下完补 server_path 并启用本地推理",
+            same_dir
+            and r["changed"].get("server_path") == str(server)
+            and cfg.local_ai.server_path == str(server)
+            and cfg.local_ai.enabled is True,
+            f"dir_ok={same_dir} changed={r['changed']} enabled={cfg.local_ai.enabled}",
+        )
+    )
+
+    r2 = ai_backend.autoconfigure(cfg, enable=True)
+    judgements.append(
+        (
+            "自动配置：已配好时不再改写（幂等，可每次启动跑）",
+            r2["changed"] == {},
+            f"changed={r2['changed']}",
+        )
+    )
+
+    custom = str(home / "custom" / "llama-server.exe")
+    cfg3 = Config.from_dict(
+        {
+            "paths": {"model_dir": str(home / "models")},
+            "local_ai": {"server_path": custom},
+        },
+        root=home,
+    )
+    r3 = ai_backend.autoconfigure(cfg3, enable=True)
+    judgements.append(
+        (
+            "自动配置：绝不覆盖用户手填的路径",
+            "server_path" not in r3["changed"] and cfg3.local_ai.server_path == custom,
+            f"changed={r3['changed']} value={cfg3.local_ai.server_path}",
+        )
+    )
+
+    # 手填的路径失效时必须继续往下找。早先这里直接 return None，
+    # 表现为「文件明明在、界面说找不到」——配置里一行过期绝对路径就能触发。
+    found = ai_backend._find_server(cfg3.local_ai, vdir)
+    judgements.append(
+        (
+            "路径失配：手填路径不存在时回退自动查找（不是判死）",
+            found == server,
+            f"found={found} 期望={server.name}",
+        )
+    )
+
+    empty = home / "empty"
+    (empty / "llama").mkdir(parents=True, exist_ok=True)
+    cfg4 = Config.from_dict({"local_ai": {"model_dir": str(empty)}}, root=home)
+    r4 = ai_backend.autoconfigure(cfg4, enable=True)
+    judgements.append(
+        (
+            "自动配置：文件不全时不启用，并说清缺什么",
+            r4["ready"] is False and r4["changed"] == {} and "缺" in r4["summary"],
+            f"ready={r4['ready']} changed={r4['changed']} summary={r4['summary']}",
+        )
+    )
+
+    # ---- 下载完成事件：必须在 emit 之前就填好 ----
+    # 前端收到 `model_download_done` 会立刻拉一次 `get_config`。若自动配置放在
+    # emit 之后，那次刷新读到的仍是空路径 —— 于是「下完了仍然是空框」原样复现。
+    import io as _io
+
+    from app.models.config import Config as _Cfg
+    from app.rpc import Protocol as _Proto
+    from app.rpc import Worker as _Worker
+
+    home2 = Path(tmp) / "autocfg_event"
+    vdir2 = home2 / "models" / "qwen3-vl-2b"
+    (vdir2 / "llama").mkdir(parents=True, exist_ok=True)
+    (vdir2 / "llama" / "llama-server.exe").write_bytes(b"x")
+    (vdir2 / "m.gguf").write_bytes(b"x")
+    (vdir2 / "mmproj-b.gguf").write_bytes(b"x")
+    cfg5 = _Cfg.from_dict(
+        {
+            "paths": {"model_dir": str(home2 / "models"), "work_dir": str(home2 / "work")},
+            "local_ai": {"enabled": False},
+        },
+        root=home2,
+    )
+    cfg5_path = home2 / "config.yaml"
+    cfg5.save(cfg5_path)
+    buf = _io.StringIO()
+    worker = _Worker(cfg5, _Proto(buf), config_path=cfg5_path)
+    worker._on_download_event(
+        "model_download_done",
+        {"pack": "local_ai", "total_bytes": 0, "detail": "测试", "verified": True},
+    )
+    frames = [json.loads(ln) for ln in buf.getvalue().splitlines() if ln.startswith("{")]
+    done = next((f for f in frames if f.get("name") == "model_download_done"), {})
+    saved = cfg5_path.read_text(encoding="utf-8")
+    judgements.append(
+        (
+            "下载完成即自动配置：事件带 autoconfigured 且配置已落盘",
+            bool(done.get("data", {}).get("autoconfigured", {}).get("server_path"))
+            and "server_path: " in saved
+            and "server_path: null" not in saved,
+            f"autoconfigured={done.get('data', {}).get('autoconfigured')}",
+        )
+    )
+
+
 def check_author_listing(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
     """`list_author` 的归一化：**只有拼得出可下载地址的条目才允许出现**。
 
@@ -1293,6 +1425,7 @@ def main() -> int:
     check_summarizer(tmp, host.judgements)
     check_asset_packs(tmp, host.judgements)
     check_ai_backend(tmp, host.judgements)
+    check_local_ai_autoconfig(tmp, host.judgements)
     check_author_listing(tmp, host.judgements)
 
     run_eof_flow(env, host.judgements)

@@ -112,6 +112,19 @@ export function SettingsDialog({
   const localAIDownload = download?.pack === "local_ai" ? download : null;
   const localAIPack = info?.packs?.find((p) => p.key === "local_ai") ?? null;
 
+  // llama-server 路径的四种状态：填了且有效 / 填了但失效 / 留空但已自动识别 / 完全没找到。
+  // 一定要显式画出来 —— 「留空 = 自动查找」这个约定如果只存在于占位符里，
+  // 用户下完 2.3 GiB 回来看到一个空输入框，唯一合理的结论就是「没配置成功」。
+  const serverPath = (draft?.local_ai.server_path ?? "").trim();
+  const resolvedServer = info?.ai.local_server ?? null;
+  const serverPathState: "explicit-ok" | "explicit-bad" | "auto" | "missing" = serverPath
+    ? resolvedServer === serverPath
+      ? "explicit-ok"
+      : "explicit-bad"
+    : resolvedServer
+      ? "auto"
+      : "missing";
+
   const patch = useMemo(() => (draft ? normalize(draft) : null), [draft]);
 
   const dirty = useMemo(() => {
@@ -627,8 +640,9 @@ export function SettingsDialog({
               一次下载取齐三样：llama.cpp 运行包（含 33 个 CUDA DLL）、Qwen3-VL-2B 的
               GGUF 权重、视觉投影器 mmproj —— 共约 {localAIPack?.approx_human || "2.3 GiB"}
               ，解压后另需约 0.7 GiB。落点 <code>{localAIPack?.target_dir ?? info.ai.local_model_dir}</code>
-              ，**不进安装包**，断点续传。起不来时自动回退上面的云接口，不会让任务失败。
-              下载完还要打开下面的「画面理解」开关，模型才会真的去看拼版图。
+              ，**不进安装包**，断点续传。下完会自动填好下面的 llama-server 路径、
+              并把本地推理打开；起不来时自动回退上面的云接口，不会让任务失败。
+              还要打开下面的「画面理解」开关，模型才会真的去看拼版图。
             </p>
             <DownloadProgress download={localAIDownload} />
             <DownloadNote download={localAIDownload} />
@@ -668,7 +682,7 @@ export function SettingsDialog({
                 <input
                   value={draft.local_ai.server_path ?? ""}
                   disabled={readOnly}
-                  placeholder="留空自动查找"
+                  placeholder={resolvedServer ? "已自动识别，无需填写" : "留空自动查找"}
                   onChange={(e) => setLocalAI("server_path", e.target.value || null)}
                 />
                 <button
@@ -687,6 +701,39 @@ export function SettingsDialog({
                 </button>
               </div>
             </label>
+            <p className="settings-hint">
+              {serverPathState === "auto" && (
+                <>
+                  <span className="chip chip-ok">已自动识别</span>{" "}
+                  <code>{resolvedServer}</code> —— 下载完成后自动填入，不需要手填。
+                </>
+              )}
+              {serverPathState === "explicit-ok" && (
+                <>
+                  <span className="chip chip-ok">路径有效</span>，会直接用这一个。
+                </>
+              )}
+              {serverPathState === "explicit-bad" && (
+                <>
+                  <span className="chip chip-warn">填写的路径不可用</span>
+                  {resolvedServer ? (
+                    <>
+                      {" "}已回退到自动查找：<code>{resolvedServer}</code>。
+                      建议点「浏览…」重新指定，或清空这一栏恢复自动识别。
+                    </>
+                  ) : (
+                    " 也没能自动找到 —— 点上面的「下载本地视觉模型」把它取回来。"
+                  )}
+                </>
+              )}
+              {serverPathState === "missing" && (
+                <>
+                  <span className="chip chip-warn">未找到 llama-server</span>
+                  {" "}点上面的「下载本地视觉模型」会一次取齐运行包与权重；
+                  已经下过则确认这一栏与「视觉模型目录」没有被改乱。
+                </>
+              )}
+            </p>
             <label className="field">
               <span className="field-label">
                 视觉模型目录

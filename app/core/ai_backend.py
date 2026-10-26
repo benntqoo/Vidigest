@@ -269,6 +269,67 @@ def resolve(cfg: object) -> tuple[Backend | None, str]:
     return None, local_reason
 
 
+# ---------------------------------------------------------------- 自动配置
+
+
+def autoconfigure(cfg: object, *, enable: bool = False) -> dict:
+    """把「文件已经下好了、但配置里还是空」的本地模型路径**补进配置对象**。
+
+    ## 为什么要有这一步
+
+    `server_path` / `model_dir` 留空本来是「自动查找」，但它在设置界面上就是一个
+    空输入框。用户花两分钟下完 2.3 GiB，回来看到空框，唯一合理的理解是
+    「没配置成功」—— 2026-10-27 收到的反馈正是这句。**默认值应当自己落进配置，
+    而不是要求用户理解「留空 = 自动」这个约定。**
+
+    ## 边界
+
+    - **只补空值**，绝不覆盖用户填过的路径 —— 那是他的选择，哪怕我们觉得另一条更好
+    - 补的路径必须在「我们下载的那个落点」（`<视觉模型目录>/llama/`）里，
+      不把 PATH 里来路不明的 `llama-server` 钉进配置（见 `server_in_dir()`）
+    - `enable=True` 才动 `local_ai.enabled`。**只在「用户刚点完下载」时传 True**：
+      那时意图明确（他就是要用本地模型）；启动时替用户改开关是越界
+    - 不写盘、不启动进程 —— 落盘由调用方决定（`rpc.py` 里 `Config.save()`）
+
+    返回 `{"changed": {...}, "summary": "...", "ready": bool}`。
+    `changed` 为空表示「本来就已经配好了」，调用方据此决定要不要写文件。
+    """
+    la = getattr(cfg, "local_ai", None)
+    changed: dict[str, object] = {}
+    if la is None:
+        return {"changed": changed, "summary": "配置里没有 local_ai 段", "ready": False}
+
+    model_dir = cfg.vision_model_path()
+    model, mmproj = _find_weights(model_dir)
+    server = server_in_dir(model_dir)
+    ready = server is not None and model is not None
+
+    if not getattr(la, "server_path", None) and server is not None:
+        la.server_path = str(server)  # type: ignore[attr-defined]
+        changed["server_path"] = str(server)
+    if enable and not getattr(la, "enabled", False) and ready:
+        la.enabled = True  # type: ignore[attr-defined]
+        changed["enabled"] = True
+
+    if not ready:
+        missing = []
+        if server is None:
+            missing.append("llama/llama-server.exe")
+        if model is None:
+            missing.append("*.gguf 主权重")
+        if mmproj is None:
+            missing.append("mmproj-*.gguf")
+        summary = f"视觉模型目录还不完整：{model_dir}（缺 {'、'.join(missing)}）"
+    elif changed:
+        summary = f"已自动配置本地模型：{changed.get('server_path', getattr(la, 'server_path', ''))}"
+        if changed.get("enabled"):
+            summary += "，并已启用本地推理"
+    else:
+        summary = f"本地模型已就位：{getattr(la, 'server_path', '')}"
+
+    return {"changed": changed, "summary": summary, "ready": ready}
+
+
 # ---------------------------------------------------------------- 调用
 
 
@@ -395,23 +456,44 @@ def _tail_log(log_path: Path, limit: int = 400) -> str:
     return " / ".join(pick)[:limit]
 
 
+def server_in_dir(model_dir: Path) -> Path | None:
+    """模型目录下 `llama/` 里的 llama-server。**只认这个落点**，不查 PATH。
+
+    单独抽出来给 `autoconfigure()` 用：写进配置的路径必须是「我们下载的那个」，
+    不能把 PATH 里某个来路不明的 `llama-server` 钉进用户配置 —— 那种路径在
+    换台机器 / 卸载后又变成悬空指向，比留空更难排查。
+    """
+    names = ("llama-server.exe", "llama-server") if os.name == "nt" else ("llama-server",)
+    for name in names:
+        cand = Path(model_dir) / "llama" / name
+        if cand.is_file():
+            return cand
+    return None
+
+
 def _find_server(la: object, model_dir: Path) -> Path | None:
-    """按「显式路径 → 模型目录下的 llama/ → PATH」找 llama-server。"""
+    """按「显式路径 → 模型目录下的 llama/ → PATH」找 llama-server。
+
+    **显式路径失效时必须继续往下找**：`server_path` 是用户填过一次就会一直留着的值，
+    而模型目录可能被搬家、被卸载、被换盘。早先这里 `return None`，于是
+    「配置里有一行过期的绝对路径」会表现成「明明文件在、界面说找不到」。
+    """
     explicit = getattr(la, "server_path", None) if la is not None else None
     if explicit:
         p = Path(explicit)
-        return p if p.is_file() else None
-    names = ("llama-server.exe", "llama-server") if os.name == "nt" else ("llama-server",)
-    for name in names:
-        cand = model_dir / "llama" / name
-        if cand.is_file():
-            return cand
+        if p.is_file():
+            return p
+        logging.warning("local_ai.server_path 指向的文件不存在：%s（改为自动查找）", p)
+    found = server_in_dir(model_dir)
+    if found is not None:
+        return found
     import shutil
 
+    names = ("llama-server.exe", "llama-server") if os.name == "nt" else ("llama-server",)
     for name in names:
-        found = shutil.which(name)
-        if found:
-            return Path(found)
+        hit = shutil.which(name)
+        if hit:
+            return Path(hit)
     return None
 
 

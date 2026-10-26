@@ -52,7 +52,7 @@ from app.models.config import (
 from app.models.task import Task, TaskStatus
 
 PROTOCOL_VERSION = 1
-SERVER_VERSION = "0.6.1"
+SERVER_VERSION = "0.6.2"
 
 #: 内部事件名 → 协议事件名。
 #: 调度器不感知协议，它只报「发生了什么」；名字翻译在这里做，与 `STAGE_LABELS` 同理。
@@ -353,6 +353,11 @@ class Worker:
                 "启动重置：%d 条中途态任务已回退到上一稳定态（上次进程可能被强杀）",
                 len(changed),
             )
+        # 老版本下载完不写路径（0.6.1 及之前），升级后配置里 `server_path` 还是 null。
+        # 启动时补一次，用户不必为了「让它认识已下载的文件」重新下一遍 2.3 GiB。
+        # **不传 enable**：替用户把开关打开是越界，他可能是特意关掉的。
+        if not self.config_is_default:
+            self._autoconfigure_local_ai(enable=False)
         logging.info("worker 就绪：%s", self.concurrency.to_dict())
 
     #: GPU 验证的看门狗超时（秒）。
@@ -817,6 +822,13 @@ class Worker:
 
     def _on_download_event(self, name: str, data: dict[str, Any]) -> None:
         """下载器事件 → 协议帧。下载器本身不感知协议（与 `core/` 的约定一致）。"""
+        # 视觉模型刚下完 ⇒ 立刻把路径补进配置（`server_path` 留空时）。
+        # **必须在 emit 之前做**：`model_download_done` 之后前端会马上拉一次
+        # `get_config`，那时配置里得已经填好 —— 否则用户看到的仍是空框，
+        # 也就是这次反馈的问题本身。
+        if name == "model_download_done" and data.get("pack") == "local_ai":
+            data = dict(data)
+            data.update(self._autoconfigure_local_ai(enable=True))
         self.proto.emit(name, data)
         # 只有语音模型的下载结论能更新 GPU 环境态：那是「用一次真实推理校验」的
         # 结果。视觉模型的校验只验二进制能不能起，混进来会把状态栏写成谬误。
@@ -826,6 +838,42 @@ class Worker:
                 str(data.get("detail") or ""),
                 str(data.get("blocked_reason") or ""),
             )
+
+    def _autoconfigure_local_ai(self, *, enable: bool) -> dict[str, Any]:
+        """补全本地模型路径并落盘。返回要附加到事件上的字段。
+
+        **不重启 worker**（与 `set_config` 的 D-S1 不同，这是刻意的）：
+        `Dispatcher` 与 `Worker` 持有的是**同一个 `Config` 对象**，原地改
+        `local_ai.server_path` 当场就对所有读者生效；而 `local_ai.*` 不参与
+        并发规划与模型缓存，没有「启动时算好、之后不能变」的那个约束。
+        下载可能发生在任务进行中，为了一行路径去重启 worker 会中断任务。
+        """
+        try:
+            result = ai_backend.autoconfigure(self.cfg, enable=enable)
+        except Exception as exc:  # noqa: BLE001 — 自动配置失败不该毁掉下载结果
+            logging.warning("本地模型自动配置失败（不影响已下载的文件）：%s", exc)
+            return {}
+        changed = result.get("changed") or {}
+        if not changed:
+            # 每次启动都会跑到这里。只有「已就位」值得 INFO 一句；
+            # 「目录不完整」对没打算用本地模型的用户是纯噪音（他们压根没下载），
+            # 降成 debug —— 真要用的时候界面上会显示缺什么。
+            if result.get("ready"):
+                logging.info("%s", result.get("summary", ""))
+            else:
+                logging.debug("%s", result.get("summary", ""))
+            return {"autoconfigured": {}, "autoconfigured_detail": result.get("summary", "")}
+
+        try:
+            self.cfg.save(self.config_path)
+        except OSError as exc:
+            # 内存里已经生效，只是下次启动会重来一遍 —— 不当作失败
+            logging.warning("自动配置已生效，但写入 %s 失败：%s", self.config_path, exc)
+        logging.info("%s（已写入 %s）", result.get("summary", ""), self.config_path)
+        return {
+            "autoconfigured": changed,
+            "autoconfigured_detail": result.get("summary", ""),
+        }
 
     def _config_payload(self) -> dict[str, Any]:
         """`get_config` 的响应体：全量配置 + 元信息。"""

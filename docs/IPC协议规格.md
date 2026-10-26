@@ -227,8 +227,12 @@ download_model  {pack?: "whisper" | "local_ai", model?: string}
   → model_download_extracting {pack, file, detail, pct}          ← 仅含 zip 的包（local_ai）
   → model_download_verifying  {pack, detail}
   → model_download_done       {pack, model, model_path, total_bytes, elapsed_sec,
-                               verified, detail, blocked_reason}
+                               verified, detail, blocked_reason,
+                               autoconfigured, autoconfigured_detail}
 ```
+
+`autoconfigured` 是本次自动写进配置的字段（`{server_path?, enabled?}`，为空对象表示
+「本来就配好了」）。只有 `pack="local_ai"` 会带这两个键。
 
 失败 / 取消：`model_download_failed {pack, code, detail}`、`model_download_cancelled {pack, detail}`。
 
@@ -241,6 +245,18 @@ download_model  {pack?: "whisper" | "local_ai", model?: string}
 |---|---|---|---|
 | `whisper` | `env_probe.MODEL_FILES` 5 个文件 | 2.88 GiB | `<model_dir>/<runtime.model>/` |
 | `local_ai` | llama.cpp 运行包 ×2（zip）+ Qwen3-VL-2B Q4_K_M + mmproj-BF16 | 2.35 GiB（解压 +0.72 GiB） | `<vision_model_path>/`，zip 解到其下 `llama/` |
+
+**`local_ai` 下完会自动改配置**（v1.12，`ai_backend.autoconfigure()`）：
+
+- 只补 `local_ai.server_path` 的**空值**，绝不覆盖用户手填的路径
+- 同时把 `local_ai.enabled` 打开（用户刚点完下载，意图明确）
+- 补的路径必须落在 `<vision_model_path>/llama/` 里，不把 PATH 上来路不明的
+  `llama-server` 钉进配置
+- 写入后**不重启 worker**：`Dispatcher` 与本类持有同一个 `Config` 对象，原地改
+  当场生效；`local_ai.*` 不参与并发规划，没有 D-S1 的那个约束。下载可能发生在
+  任务进行中，为一行路径重启会中断任务
+- 同一逻辑在 `_bootstrap()` 再跑一次（`enable=False`），让 0.6.1 及之前「下完了
+  但配置里是 null」的老配置自动补上，不必重下 2.3 GiB
 
 - **文件清单在 `app/core/asset_packs.py`**：加一种资产 = 加一个 `AssetPack`，
   传输逻辑（`model_downloader.py`）一行不动
@@ -516,6 +532,12 @@ stdout 写入     → 加锁后单线程写入（JSON Lines 天然按行独立�
 | 61 | 资产包：未知 key | `build_pack` 返回 `None`，RPC 回 `E_BAD_ARGS`；`PACK_KEYS` 每个都能建 |
 | 62 | `get_config.packs` | `present` 是「现在就能用吗」而不是「下过吗」，且与 `model_present` / `ai.local_ready` 一致 |
 | 63 | zip 解压与 zip-slip | 解压到 `dest_dir` 并删原包；`../` 条目被跳过且不写到目录外 |
+| 64 | 自动配置：下完补 `server_path` 并启用 | 空值才补；`server_path` 指向 `<vision_model_path>/llama/llama-server.exe` |
+| 65 | 自动配置幂等 | 已配好时 `changed == {}`（可每次启动跑）|
+| 66 | 自动配置不覆盖手填路径 | 用户明确填过的值一个字都不改 |
+| 67 | 手填路径失效 → 回退自动查找 | 早先 `return None` 的表现是「文件明明在、界面说找不到」|
+| 68 | 文件不全 → 不启用并说清缺什么 | `ready=False`、`changed=={}`、summary 里列出缺哪几个文件 |
+| 69 | 下载完成事件带 `autoconfigured` 且已落盘 | **必须在 emit 之前**填好：前端收到 done 会立刻拉 `get_config` |
 | 41 | 模型探测只认「数据目录 + 安装目录」 | 非系统盘上的 `<盘>:\Vidigest\models` **不再被识别**（否则会出现「模型放安装目录了却用了 D 盘那份」）|
 
 **判据 1 是最有价值的一条**：它用一个断言覆盖了「任何地方不小心 `print` 到 stdout」这一整类
@@ -549,6 +571,7 @@ stdout 写入     → 加锁后单线程写入（JSON Lines 天然按行独立�
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-27 | v1.12 | **下完自动配置本地模型**：`model_download_done` 增 `autoconfigured` / `autoconfigured_detail`（仅 `pack="local_ai"`）；`ai_backend.autoconfigure()` 只补 `local_ai.server_path` 的空值并顺带启用本地推理，`_bootstrap()` 以 `enable=False` 再跑一次以便老配置自动补齐；`_find_server()` 在**显式路径失效时回退自动查找**（早先直接 `return None`，症状是「文件在、界面说找不到」）。判据 64 → **70**（编号含历史空号）|
 | 2026-10-27 | v1.10 | **本地优先 AI 后端**：新增可编辑段 `local_ai`（llama-server 参数）与 `vision`（画面理解开关）；汇总与画面理解的后端由 `app/core/ai_backend.py::resolve()` 统一选（**本地 llama-server → 云端 → 无**），`skip_reason` 不再因缺密钥而拦截，**没有云端密钥也能汇总**；`get_config` 增 `ai` 诊断（只探测、**不启动进程**）。新增产物 `visual.md`（拼版图 → 模型读 → 并入汇总）。判据 53 → **59** |
 | 2026-10-27 | v1.11 | **模型下载泛化为资产包下载**：`download_model` 增 `pack`（`whisper` 缺省 / `local_ai`），文件清单移入 `app/core/asset_packs.py`，传输逻辑不动；新增 zip 解压（整包解压 + zip-slip 防护 + 解压进度事件 `model_download_extracting`）与「另一个包在下回 `E_BUSY`」；`get_config` 增 `packs`，所有 `model_download_*` 事件带 `pack`。**本地视觉模型的运行包与权重改为装完后点击下载**（不进安装包）。判据 59 → **64**（下载层 8 → **11**） |
 | 2026-10-24 | v1.3 | 设置界面 + 模型下载：① 命令表新增 5 条（`get_config` / `set_config` / `download_model` / `cancel_model_download` / `verify_env`），新增 §3.2 详述白名单、保存即重启（D-S1）、三态布尔与 `blocked_reason`、下载事件流与续传；② `env_verified` 增 `gpu_verified` 与 `blocked_reason`；③ **语义更正**：`gpu_usable=false` 只表示「验过，确实不能用」，`null` 且 `blocked_reason` 非空表示「因环境缺失没能验」——2026-10-24 安装版首启的「GPU 不可用」误报正是这两者被混为一谈；④ §9 判据 19 → **28** 条 |

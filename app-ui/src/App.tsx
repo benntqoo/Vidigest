@@ -296,6 +296,11 @@ function App() {
             ev.data.verified === true ? "info" : "warning",
             `模型下载完成：${String(ev.data.detail ?? "")}`,
           );
+          // 后端在下完的瞬间就把 `server_path` 补进配置了（只补空值），
+          // 这里把它说出来 —— 否则「我什么都没填，怎么就配好了」会让人怀疑。
+          if (ev.data.autoconfigured_detail) {
+            pushLog("info", String(ev.data.autoconfigured_detail));
+          }
           // 下完再拉一次：`model_present` / 大小 / 缺失文件列表都变了
           refreshConfig();
           break;

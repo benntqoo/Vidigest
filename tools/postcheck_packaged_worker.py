@@ -157,6 +157,23 @@ def main() -> int:
             f"code={code}",
         )
 
+        # 1e. `ai` 诊断必须是**产物里**能算出来的。
+        # 2026-10-27 加这条：`ai_backend.autoconfigure()` 负责「下完自动填路径」，
+        # 若 PyInstaller 漏收模块，源码 70 条全绿而装完的版本里 `get_config` 直接
+        # 少一个键（0.6.1 用户看到「下完了却不会自动配置」正是这个症状的近亲）。
+        ai = ev.get("ai") or {}
+        ai_ok = (
+            isinstance(ai, dict)
+            and "active" in ai
+            and "local_ready" in ai
+            and ai.get("active") in ("local", "cloud", "none")
+        )
+        record(
+            "get_config 下发 ai 诊断（本地优先选路可算）",
+            ai_ok,
+            f"active={ai.get('active')} ready={ai.get('local_ready')} server={ai.get('local_server')}",
+        )
+
         # 2. set_config 拒绝 api_key
         # 注意：实现的口径是「丢弃 + 警告」，**不是整体失败**（`app/rpc.py:603-606`）。
         c.send("set_config", {"patch": {"summarize": {"api_key": "sk-should-not-be-written", "enabled": True}}})
