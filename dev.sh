@@ -7,6 +7,7 @@
 #   ./dev.sh dev          日常开发（venv 驱动）
 #   ./dev.sh worker       只打包 Python worker（含 28 项冒烟）
 #   ./dev.sh check        跑全部判据，不写产物
+#   ./dev.sh bump 0.2.1   递更版本号（VERSION + tauri + package + Cargo + rpc 五处）
 #   ./dev.sh clean        列出可清理的旁置产物（加 --yes 才删）
 #
 # 开关（可与子命令任意顺序）：
@@ -264,6 +265,7 @@ report_artifacts() {
 
 # -------------------------------------------------------------------- 入口
 SUBCMD=""
+ARG1=""   # bump 的版本号参数（其它子命令不接受额外参数）
 for a in "$@"; do
   case "$a" in
     --dry-run)     DRY_RUN=1 ;;
@@ -271,9 +273,25 @@ for a in "$@"; do
     --yes|-y)      CLEAN_YES=1 ;;
     --help|-h)     usage; exit 0 ;;
     -*)            die "未知参数：$a（./dev.sh --help）" ;;
-    *)             if [ -z "$SUBCMD" ]; then SUBCMD="$a"; else die "多余的参数：$a"; fi ;;
+    *)             if [ -z "$SUBCMD" ]; then SUBCMD="$a"
+                   elif [ "$SUBCMD" = "bump" ] && [ -z "$ARG1" ]; then ARG1="$a"
+                   else die "多余的参数：$a"; fi ;;
   esac
 done
+
+cmd_bump() {
+  # 版本号散在 5 个地方，少改一处不会报错，只会让「控制面板显示的版本」和
+  # 「界面显示的版本」对不上 —— 用户就说不清自己装的是哪个。
+  # 所以只给这一条命令，并由 rpc_smoke 的判据钉住一致性。
+  local ver="${1:-}"
+  need_python
+  step "递更版本号"
+  if [ -z "$ver" ]; then
+    run "$PY" tools/bump_version.py --check
+  else
+    run "$PY" tools/bump_version.py "$ver"
+  fi
+}
 
 case "$SUBCMD" in
   release)    cmd_release ;;
@@ -281,6 +299,7 @@ case "$SUBCMD" in
   dev)        cmd_dev ;;
   worker)     cmd_worker ;;
   check)      cmd_check ;;
+  bump)       cmd_bump "$ARG1" ;;
   clean)      cmd_clean ;;
   "")         usage ;;
   *)          die "未知子命令：$SUBCMD（./dev.sh --help）" ;;

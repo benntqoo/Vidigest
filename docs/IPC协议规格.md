@@ -472,6 +472,7 @@ stdout 写入     → 加锁后单线程写入（JSON Lines 天然按行独立�
 | 38 | `clear_data(workspace)`：清内容、留目录、**不碰模型** | 造一个 `probe.mp4`，清完文件没了、`work_dir` 还在、`models/` 逐项未变 |
 | 39 | `clear_data(history)`：任务清空 | 清完 `list_tasks` 返回 0 条 |
 | 40 | `clear_data` 非法 scope → `E_BAD_ARGS` | 只认 history / workspace / all |
+| 42 | worker 上报的版本 == `VERSION` | `ready.server_version` 是界面显示的那个版本；与 MSI 版本不一致 = 用户说不清自己装的哪个 |
 | 41 | 模型探测只认「数据目录 + 安装目录」 | 非系统盘上的 `<盘>:\Vidigest\models` **不再被识别**（否则会出现「模型放安装目录了却用了 D 盘那份」）|
 
 **判据 1 是最有价值的一条**：它用一个断言覆盖了「任何地方不小心 `print` 到 stdout」这一整类
@@ -506,8 +507,9 @@ stdout 写入     → 加锁后单线程写入（JSON Lines 天然按行独立�
 | 日期 | 版本 | 变更 |
 |---|---|---|
 | 2026-10-24 | v1.3 | 设置界面 + 模型下载：① 命令表新增 5 条（`get_config` / `set_config` / `download_model` / `cancel_model_download` / `verify_env`），新增 §3.2 详述白名单、保存即重启（D-S1）、三态布尔与 `blocked_reason`、下载事件流与续传；② `env_verified` 增 `gpu_verified` 与 `blocked_reason`；③ **语义更正**：`gpu_usable=false` 只表示「验过，确实不能用」，`null` 且 `blocked_reason` 非空表示「因环境缺失没能验」——2026-10-24 安装版首启的「GPU 不可用」误报正是这两者被混为一谈；④ §9 判据 19 → **28** 条 |
+| 2026-10-26 | v1.6 | 版本号收成单真源：新增 `VERSION` 文件 + `tools/bump_version.py`（一条命令改 5 处），`./dev.sh bump <x.y.z>`；`ready.server_version` 必须等于 `VERSION`。产品版本 0.1.0 → **0.2.0**（与 worker 上报值对齐）。判据 41 → **43** |
 | 2026-10-26 | v1.5 | 新增 `clear_data`（清空任务历史 / 工作目录内容，**不碰模型**）+ `data_cleared` 事件；`get_config` 增 `work_dir_exists`（首启引导区分「新建」与「沿用上次」）。目录策略同日改成「默认放安装目录」，判据 37 → **40** |
-| 2026-10-25 | v1.4 | `get_config` 增 `languages`（转写语言下拉的选项由后端下发，`config.py::LANGUAGE_LABELS` 为唯一真源）；`transcribe.language` **空串 = 自动检测**（faster-whisper 只认 `None`，归一化在 `transcriber.transcribe()` 一处）；`paths` 新增 `work_dir_confirmed`（首启引导的显式确认位）。§9 判据 28 → **41** 条 |
+| 2026-10-25 | v1.4 | `get_config` 增 `languages`（转写语言下拉的选项由后端下发，`config.py::LANGUAGE_LABELS` 为唯一真源）；`transcribe.language` **空串 = 自动检测**（faster-whisper 只认 `None`，归一化在 `transcriber.transcribe()` 一处）；`paths` 新增 `work_dir_confirmed`（首启引导的显式确认位）。§9 判据 28 → **43** 条 |
 | 2026-10-02 | v1 | 首版。确立 stdio + JSON Lines、命令/事件清单、状态语义、心跳、进程回收与验收判据 |
 | 2026-10-06 | v1.2 | 语义更正（卡死缺陷修复的配套）：① `pipeline_state` 按 §4 本义「状态跃迁」补齐**终态推送**（→idle 于批次收敛、→aborted 于整批中止），此前实现只在 start/pause/resume 时推送，UI 开始按钮会永久灰死；② 空队列 `start` 落 idle 而非 running（与 `resume()` 的条件式语义对齐）；③ 中止后单次 `start` 可恢复（`_cmd_start` 改为先 start 后 submit，`_put` 感知 ABORTED，队列条目倒回 pending）。§9 判据 11/12/13 同步更正 |
 | 2026-10-03 | v1.1 | ① 新增 `cancelled` 状态与 §3.1 取消语义（协作式取消、检查点位置、两条硬要求）；② 事件清单补齐调度器事件：`pipeline_state` / `resource_warning` / `batch_aborted` / `batch_done`，`task_update` 之外的控制面事件改名映射（`dispatcher` 只报事实，名字翻译在 `rpc.py` 的 `EVENT_NAMES`）；③ `ready` 增 `pipeline_state`；④ §4.1 补限流落地常量与「限流在调度器做，不在 rpc 做」的理由；⑤ §9 判据从 8 条扩到 19 条（含新修好的 EOF 判据），并标注两条**尚未覆盖**的项（转写进行中的心跳、控制面事件在真实批次下的时序）；⑥ `E_NOT_IMPLEMENTED` 已无命令返回 |

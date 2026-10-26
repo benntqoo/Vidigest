@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 // 注意：`protocol::Command` 是**协议信封**（会被 serde 序列化后写进 stdin），
 // 与上面 `std::process::Command`（用来 spawn 进程）同名但完全不同。
@@ -716,8 +716,17 @@ impl Inner {
                 // 规格 §4：`ready` 事件本身带 `pipeline_state`，顺手记下 ——
                 // 前端挂载时拉快照就能拿到调度器状态，不必等下一次跃迁。
                 snap.pipeline_state = ev.data["pipeline_state"].as_str().map(str::to_string);
+                let version = snap.server_version.clone();
                 drop(snap);
                 self.emit_state();
+                // 窗口标题带上版本号：用户要「一眼看出装的是哪个版本」。
+                // 直接用 `document.title` 不保准（不同平台同步行为不一致），
+                // 这里用窗口 API；拿不到窗口（还没建好 / label 变了）就静默跳过。
+                if let Some(v) = version {
+                    if let Some(win) = self.app.get_webview_window("main") {
+                        let _ = win.set_title(&format!("Vidigest {v}"));
+                    }
+                }
             }
             "env_verified" => {
                 let mut snap = self.snapshot.lock().unwrap();

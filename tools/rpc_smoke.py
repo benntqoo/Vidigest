@@ -168,6 +168,14 @@ def run_main_flow(env: dict[str, str]) -> Host:
         f"server={data.get('server_version')} gpu_usable={data.get('gpu_usable')} "
         f"verified={data.get('gpu_verified')} 并发={data.get('concurrency')}",
     )
+    # 版本号是「用户确认自己装的哪个版本」的唯一凭据：MSI 上是 tauri.conf 的版本，
+    # 界面上显示的是 worker 上报的这个值。两者不一致 = 用户永远说不清自己装的啥。
+    want_version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    host.record(
+        "worker 上报的版本 == VERSION",
+        data.get("server_version") == want_version,
+        f"上报={data.get('server_version')} VERSION={want_version}",
+    )
 
     # ---- 判据 3：未知命令不崩 ----
     host.send("no_such_command", req_id="c-2")
@@ -743,6 +751,32 @@ def check_model_dir_detect(tmp: str, judgements: list[tuple[str, bool, str]]) ->
     )
 
 
+def check_version_consistency(judgements: list[tuple[str, bool, str]]) -> None:
+    """5 处版本号必须一致（VERSION / tauri.conf / package.json / Cargo.toml / rpc.py）。
+
+    为什么用子进程跑 `bump_version.py --check` 而不是在这里重写一遍正则：
+    校验逻辑只应该有一份。脚本改了、判据自动跟着改；若在这里抄一份，
+    两份迟早对不上，而「版本不一致」恰恰是那种**没人会主动去看**的问题。
+    """
+    import subprocess
+
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "bump_version.py"), "--check"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    tail = (proc.stdout or proc.stderr or "").strip().splitlines()
+    judgements.append(
+        (
+            "版本号 5 处一致（VERSION / tauri / package / Cargo / rpc）",
+            proc.returncode == 0,
+            tail[-1] if tail else f"exit={proc.returncode}",
+        )
+    )
+
+
 def main() -> int:
     print("IPC 协议冒烟测试 —— docs/IPC协议规格.md §9\n")
 
@@ -755,6 +789,7 @@ def main() -> int:
     check_language_table(host.judgements)
     check_default_dirs(tmp, host.judgements)
     check_model_dir_detect(tmp, host.judgements)
+    check_version_consistency(host.judgements)
 
     run_eof_flow(env, host.judgements)
 
