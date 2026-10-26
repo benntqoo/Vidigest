@@ -182,12 +182,10 @@ class YtDlpProvider:
         )
 
     def download(self, task, cfg, out_dir, on_progress=None, cancel_event=None):
-        """委托给 `fetcher.download()` —— 下载路径本轮**刻意不动**。
+        """走 `fetcher.download_ytdlp()` —— **不能回调 `fetcher.download()`**。
 
-        理由：那是唯一有 7 条 `fetcher_selftest` + 完整 `rpc_smoke` 护着的热路径，
-        而本轮的目标是「把平台差异抽出来」，不是重写下载。搬运留到下一轮，
-        且必须保持判据全绿后再搬。
+        `fetcher.download()` 现在是分发器（会调回 provider），回调它就是无限递归。
         """
         from app.core import fetcher
 
-        return fetcher.download(task, cfg, Path(out_dir), on_progress, cancel_event)
+        return fetcher.download_ytdlp(task, cfg, Path(out_dir), on_progress, cancel_event)

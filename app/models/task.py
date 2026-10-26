@@ -30,6 +30,9 @@ class TaskStatus(str, Enum):
     TRANSCRIBING = "transcribing"
     TRANSCRIBED = "transcribed"
     FRAMING = "framing"
+    #: 抽帧完成、等待汇总。2026-10-27 新增：之前抽帧直接置 DONE，汇总阶段
+    #: 没有任何"入口状态"，于是 `SUMMARIZING` 成了永远到不了的名字。
+    FRAMED = "framed"
     SUMMARIZING = "summarizing"
     DONE = "done"
     FAILED = "failed"
@@ -43,7 +46,8 @@ INTERRUPTED_ROLLBACK: dict[TaskStatus, TaskStatus] = {
     TaskStatus.DOWNLOADING: TaskStatus.PENDING,
     TaskStatus.TRANSCRIBING: TaskStatus.DOWNLOADED,
     TaskStatus.FRAMING: TaskStatus.TRANSCRIBED,
-    TaskStatus.SUMMARIZING: TaskStatus.TRANSCRIBED,
+    TaskStatus.FRAMED: TaskStatus.TRANSCRIBED,
+    TaskStatus.SUMMARIZING: TaskStatus.FRAMED,
 }
 
 #: 不需要重新处理的状态。

@@ -58,7 +58,8 @@ _DEFAULT_SOCKET_TIMEOUT = 30
 def cookie_hint(configured: str | None) -> str:
     """cookie 失败的可操作提示。PRD D6：错误提示**首行即动作**。"""
     return (
-        f"重新采集抖音 cookie：python tools/refresh_cookies.py，并确认 config.yaml 的 "
+        f"先在设置→维护里点「抖音登录」（扫码一次即可，登录态存在本机）；\n"
+        f"或重新采集 cookie：python tools/refresh_cookies.py，并确认 config.yaml 的 "
         f"paths.cookies_file 指向生成的 cookies.txt（当前：{configured or '未配置'}）。\n"
         "原因：抖音对匿名请求也要求新鲜 cookie（ttwid 约 24 小时过期），"
         "缺失或过期时 yt-dlp 必然失败。自动重取属阶段 4（cookie.auto_refresh），尚未实现。"
@@ -154,20 +155,51 @@ def download(
     on_progress: Callable[[str, float], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> DownloadResult:
-    """把 `task` 指向的视频取到 `out_dir/video.<ext>`。
+    """按平台分发：`app/platforms/registry.resolve()` → provider.download()。
 
-    `task.platform == "local"` 时走本地文件分支（硬链接优先），否则调 yt-dlp。
+    ⚠️ **2026-10-26 的教训**：一度把平台层建好了却没有接进来 —— `pipeline` 调的
+    始终是这个函数，而它内部还是老的「if 本地 else yt-dlp + 抖音 cookie 硬拦」。
+    于是抖音的浏览器取流那条路**在生产里从没被调用过**，用户看到的是
+    「重新采集抖音 cookie」。新建的抽象**必须接到真正的调用点上**，否则只是摆设。
 
-    `cancel_event` 只对 yt-dlp 分支有意义：本地分支是硬链接/复制，实测均在
-    1 秒内完成，为它加检查点只会让 `_take_local` 变复杂而无实际收益。
+    递归风险：各 provider 的默认实现会回调本模块的 `download_ytdlp()` /
+    `take_local()`，**不能回调 `download()`** —— 那会无限递归。
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     _report(on_progress, "downloading", 0.0)
 
-    if task.platform == LOCAL_PLATFORM:
-        return _take_local(task, out, cfg, on_progress)
+    from app.platforms import resolve  # 延迟导入：platforms 依赖本模块
+
+    provider = resolve(task.url, task.platform)
+    logging.info("下载分发：platform=%s provider=%s", task.platform, provider.name)
+    return provider.download(task, cfg, out, on_progress, cancel_event)
+
+
+def download_ytdlp(
+    task: Task,
+    cfg: Config,
+    out_dir: str | Path,
+    on_progress: Callable[[str, float], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> DownloadResult:
+    """通用（yt-dlp）实现。**provider 的默认下载走这里，不要回调 `download()`。**"""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
     return _download_remote(task, out, cfg, on_progress, cancel_event)
+
+
+def take_local(
+    task: Task,
+    cfg: Config,
+    out_dir: str | Path,
+    on_progress: Callable[[str, float], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> DownloadResult:
+    """本地文件实现（硬链接优先）。同样给 provider 用，不回调 `download()`。"""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    return _take_local(task, out, cfg, on_progress)
 
 
 def _take_local(

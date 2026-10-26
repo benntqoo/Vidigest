@@ -131,7 +131,9 @@ class _Session:
                 user_data_dir=str(self.profile),
                 channel="msedge",  # 用系统 Edge：不下载 chromium
                 headless=self.headless,
-                viewport={"width": 1280, "height": 800},
+                # ⚠️ viewport 决定**分辨率**：实测 1280×800 只给 720p（257 kbps），
+                # 1920×1080 才给 1080p（300 kbps）。播放器按可见尺寸选清晰度。
+                viewport={"width": 1920, "height": 1080},
                 user_agent=USER_AGENT,
                 args=["--disable-blink-features=AutomationControlled"],
             )

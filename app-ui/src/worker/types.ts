@@ -93,6 +93,7 @@ export type TaskStatus =
   | "transcribing"
   | "transcribed"
   | "framing"
+  | "framed"
   | "summarizing"
   | "done"
   | "failed"
@@ -124,6 +125,7 @@ export const STATUS_META: Record<TaskStatus, { label: string; tone: Tone }> = {
   transcribing: { label: "转写中", tone: "active" },
   transcribed: { label: "待抽帧", tone: "active" },
   framing: { label: "抽帧中", tone: "active" },
+  framed: { label: "待汇总", tone: "active" },
   summarizing: { label: "汇总中", tone: "active" },
   done: { label: "完成", tone: "ok" },
   // `failed` 与 `cancelled` 刻意不同色：前者是故障，后者是用户意图（规格 §5）

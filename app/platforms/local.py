@@ -22,6 +22,7 @@ class LocalProvider(YtDlpProvider):
         raise NotSupported("本地文件没有作者作品列表。")
 
     def download(self, task, cfg, out_dir, on_progress=None, cancel_event=None):
+        """走 `fetcher.take_local()`（硬链接优先），**不回调 `fetcher.download()`**。"""
         from app.core import fetcher
 
-        return fetcher.download(task, cfg, Path(out_dir), on_progress, cancel_event)
+        return fetcher.take_local(task, cfg, Path(out_dir), on_progress, cancel_event)

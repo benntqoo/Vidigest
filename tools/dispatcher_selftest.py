@@ -37,6 +37,7 @@ from app.models.task import Task, TaskStatus  # noqa: E402
 #: 假阶段耗时（秒）。足够长以暴露竞态，足够短以让整套跑完在 10 秒内。
 DELAY_DL = 0.05
 DELAY_ASR = 0.15
+DELAY_SUM = 0.01
 DELAY_FRAMES = 0.02
 
 CONC = Concurrency(n_asr=1, n_dl=4, n_frame=2, n_sum=1)
@@ -133,9 +134,15 @@ def build_fakes(world: FakeWorld, store: Store):
     def fake_frames(task, *, on_progress=None, on_stage=None, cancel_event=None, **_ignored):
         _set(task, store, TaskStatus.FRAMING, on_stage)
         _sleep_interruptible(DELAY_FRAMES, cancel_event)
+        _set(task, store, TaskStatus.FRAMED, on_stage)
+
+    def fake_summarize(task, *, on_progress=None, on_stage=None, cancel_event=None, **_ignored):
+        # 汇总阶段（2026-10-27 新增）：**唯一置 done 的地方**。
+        # 判据里也要跟着加，否则"帧完成就 done"的旧假设会让 12 条任务全卡在 framed。
+        _sleep_interruptible(DELAY_SUM, cancel_event)
         _set(task, store, TaskStatus.DONE, on_stage)
 
-    return fake_download, fake_asr, fake_frames
+    return fake_download, fake_asr, fake_frames, fake_summarize
 
 
 def _set(task: Task, store: Store, status: TaskStatus, on_stage) -> None:
@@ -161,7 +168,12 @@ def make_env(tmp: Path, n: int, world: FakeWorld):
 
 
 def install_fakes(world: FakeWorld, store: Store) -> None:
-    pipeline.run_download, pipeline.run_asr, pipeline.run_frames = build_fakes(world, store)
+    (
+        pipeline.run_download,
+        pipeline.run_asr,
+        pipeline.run_frames,
+        pipeline.run_summarize,
+    ) = build_fakes(world, store)
 
 
 def counts(store: Store) -> dict[str, int]:
@@ -513,8 +525,8 @@ def case_idempotent_start(c: Checker) -> None:
         first = len(d._threads)
         c.check("二次 start() 返回 False（幂等）", not d.start())
         c.check(
-            "线程数 == n_dl + n_asr + n_frame",
-            first == CONC.n_dl + CONC.n_asr + CONC.n_frame,
+            "线程数 == n_dl + n_asr + n_frame + n_sum",
+            first == CONC.n_dl + CONC.n_asr + CONC.n_frame + CONC.n_sum,
             f"{first} vs {CONC.to_dict()}",
         )
         d.wait(timeout=60)

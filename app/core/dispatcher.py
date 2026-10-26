@@ -75,6 +75,7 @@ PROGRESS_UNKNOWN = -1.0
 STAGE_DOWNLOAD = TaskStatus.DOWNLOADING.value
 STAGE_ASR = TaskStatus.TRANSCRIBING.value
 STAGE_FRAMES = TaskStatus.FRAMING.value
+STAGE_SUMMARY = TaskStatus.SUMMARIZING.value
 
 
 class State(str, Enum):
@@ -166,6 +167,8 @@ class Dispatcher:
         #: 于是 `_pending` 的消费速度被转写速度反向钳住。
         self._q_asr: queue.Queue[Task] = queue.Queue(maxsize=QUEUE_CAPACITY)
         self._q_frame: queue.Queue[Task] = queue.Queue(maxsize=QUEUE_CAPACITY)
+        # 汇总阶段的输入队列（帧完成 → 汇总）
+        self._q_sum: queue.Queue[Task] = queue.Queue(maxsize=QUEUE_CAPACITY)
 
         self._threads: list[threading.Thread] = []
 
@@ -189,6 +192,9 @@ class Dispatcher:
             pipeline.run_asr, cfg=cfg, store=store, device=self._device
         )
         self._fn_frame = functools.partial(pipeline.run_frames, cfg=cfg, store=store)
+        # 第四阶段：汇总。它有独立的并发位 `concurrency.n_sum`（配置里一直留着，
+        # 之前因为没实现而空转）。放在帧之后：摘要可以用上抽帧产出的画面信息（后续）。
+        self._fn_sum = functools.partial(pipeline.run_summarize, cfg=cfg, store=store)
 
     # ------------------------------------------------------------------ 控制
 
@@ -277,6 +283,16 @@ class Dispatcher:
                         STAGE_FRAMES,
                         functools.partial(self._take_queue, self._q_frame),
                         self._fn_frame,
+                        self._q_sum,
+                    )
+                )
+            for index in range(max(1, self.conc.n_sum)):
+                self._threads.append(
+                    self._spawn(
+                        f"sum-{index}",
+                        STAGE_SUMMARY,
+                        functools.partial(self._take_queue, self._q_sum),
+                        self._fn_sum,
                         None,
                     )
                 )
@@ -430,6 +446,7 @@ class Dispatcher:
                     "download": len(self._pending),
                     "asr": self._q_asr.qsize(),
                     "frames": self._q_frame.qsize(),
+                    "summary": self._q_sum.qsize(),
                 },
                 "counts": self.store.count_by_status(),
                 "concurrency": self.conc.to_dict(),
@@ -440,7 +457,7 @@ class Dispatcher:
     def peak_concurrency(self) -> dict[str, int]:
         """各阶段出现过的最大并行数。验收用：能证明池子真的在并行。"""
         peaks: dict[str, int] = {}
-        for stage in (STAGE_DOWNLOAD, STAGE_ASR, STAGE_FRAMES):
+        for stage in (STAGE_DOWNLOAD, STAGE_ASR, STAGE_FRAMES, STAGE_SUMMARY):
             events: list[tuple[float, int]] = []
             for span in list(self.trace):
                 if span.stage != stage:
@@ -651,7 +668,7 @@ class Dispatcher:
                 return
             self._abort_reason = reason
             self._state = State.ABORTED
-            for q in (self._q_asr, self._q_frame):
+            for q in (self._q_asr, self._q_frame, self._q_sum):
                 while True:
                     try:
                         self._pending.append(q.get_nowait())

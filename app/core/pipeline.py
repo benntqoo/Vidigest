@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.core import audio as audio_mod
-from app.core import fetcher, frames as frames_mod, transcriber
+from app.core import fetcher, frames as frames_mod, summarizer as summary_mod, transcriber
 from app.core.errors import (
     FatalEnvironmentError,
     StageError,
@@ -95,6 +95,8 @@ def run_one(
         run_download(task, cfg, store, **hooks)
         run_asr(task, cfg, store, device, **hooks)
         run_frames(task, cfg, store, **hooks)
+        # 顺序执行版（CLI / 判据用）也要走汇总，否则两条路径行为不一致
+        run_summarize(task, cfg, store, **hooks)
     except FatalEnvironmentError as exc:
         _fail(task, store, str(exc), on_stage)
         raise
@@ -239,18 +241,19 @@ def run_frames(
     on_stage: StageFn | None = None,
     cancel_event: threading.Event | None = None,
 ) -> None:
-    """抽帧 + 拼版（可选）：`transcribed → framing → done`。
+    """抽帧 + 拼版（可选）：`transcribed → framing → framed`。
 
-    **本阶段是唯一一个把状态推到 `done` 的地方**。即使 `frames.enabled=false`
-    也走这里——让「谁负责置 done」只有一个答案，代价是那一次空调用（微秒级）。
+    ⚠️ 2026-10-27 改：**不再在这里置 `done`**。之前抽帧直接标完成，导致
+    「汇总」阶段没有入口状态，`SUMMARIZING` 永远到不了 —— 用户看到的就是
+    「跑完了但只有转写稿」。现在把收尾交给 `run_summarize`。
     """
     if not cfg.frames.enabled:
-        _set(task, store, TaskStatus.DONE, on_stage)
+        _set(task, store, TaskStatus.FRAMED, on_stage)
         return
 
     if not task.video_path:
         logging.warning("任务 %s 无视频文件（keep_intermediate=false？），跳过抽帧", task.id)
-        _set(task, store, TaskStatus.DONE, on_stage)
+        _set(task, store, TaskStatus.FRAMED, on_stage)
         return
 
     _set(task, store, TaskStatus.FRAMING, on_stage)
@@ -271,6 +274,47 @@ def run_frames(
     except StageError as exc:
         # 画面是可选产物：失败只记 warning，不阻断（PLAN.md §4.1）
         logging.warning("任务 %s 抽帧失败，已跳过：%s", task.id, exc)
+
+    _set(task, store, TaskStatus.FRAMED, on_stage)
+
+
+def run_summarize(
+    task: Task,
+    cfg: Config,
+    store: Store,
+    *,
+    on_progress: ProgressFn | None = None,
+    on_stage: StageFn | None = None,
+    cancel_event: threading.Event | None = None,
+) -> None:
+    """汇总：`framed → summarizing → done`。**本阶段是唯一置 `done` 的地方。**
+
+    未配置（没启用 / 没设密钥）时**直接跳过并置 done** —— 转写稿本身已经有价值，
+    不该因为它把任务卡在 `framed` 上。跳过原因写日志，用户能查到。
+    """
+    if not task.transcript_path:
+        logging.warning("任务 %s 无转写稿，跳过汇总", task.id)
+        _set(task, store, TaskStatus.DONE, on_stage)
+        return
+
+    _set(task, store, TaskStatus.SUMMARIZING, on_stage)
+    try:
+        out = summary_mod.summarize(
+            Path(task.transcript_path),
+            Path(task.out_dir),  # type: ignore[arg-type]
+            cfg,
+            title=task.title or "",
+            duration_sec=task.duration_sec or 0,
+            on_progress=on_progress,
+        )
+        if out is not None:
+            logging.info("任务 %s 汇总产物：%s", task.id, out)
+    except TaskCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # **失败不失败任务**：转写稿已有价值，LLM 抖动不该让整条任务变红。
+        # 但必须把原因写进日志，否则「没生成总结」会被当成 bug。
+        logging.warning("任务 %s 汇总失败（已跳过）：%s: %s", task.id, type(exc).__name__, exc)
 
     _set(task, store, TaskStatus.DONE, on_stage)
 

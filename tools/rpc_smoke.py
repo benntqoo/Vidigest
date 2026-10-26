@@ -900,6 +900,126 @@ def check_author_listing(tmp: str, judgements: list[tuple[str, bool, str]]) -> N
     )
 
 
+def check_download_dispatch(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
+    """`fetcher.download()` **真的**按平台分发了（本地文件不递归）。
+
+    这条是 2026-10-26 那次事故的回归守卫：平台层建好了，但 `pipeline` 调的
+    `fetcher.download()` 内部仍是老的「if 本地 else yt-dlp + 抖音 cookie 硬拦」，
+    于是抖音的浏览器取流**在生产里从没被调用过**，用户看到的是"重新采集 cookie"。
+
+    用本地文件测最划算：离线、0.3 秒、且一旦分发写成"回调自己"就会
+    RecursionError（而不是静默走错分支）—— 那种错在联网测试里也看不出来。
+    """
+    from app.core import fetcher
+    from app.models.config import Config
+    from app.models.task import Task
+
+    src = Path(tmp) / "dispatch-probe.mp4"
+    src.write_bytes(b"\x00" * 2048)
+    out = Path(tmp) / "dispatch-out"
+    out.mkdir(parents=True, exist_ok=True)
+
+    try:
+        res = fetcher.download(Task(url=str(src), platform="local"), Config.from_dict({}, root=Path(tmp)), out)
+        ok = res.from_local and res.video_path.is_file()
+        detail = f"from_local={res.from_local} 产物={res.video_path.name}"
+    except RecursionError:
+        ok, detail = False, "RecursionError：provider 回调了 fetcher.download() 自己"
+    except Exception as exc:  # noqa: BLE001
+        ok, detail = False, f"{type(exc).__name__}: {exc}"
+
+    judgements.append(("fetcher.download 按平台分发（本地不递归）", ok, detail))
+
+
+def check_summarizer(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
+    """汇总阶段：跳过条件、分块边界、请求体结构、以及"未配置也要置 done"。
+
+    这里的每一条都对应一个**用户会误解**的现象：
+    - 没配 key 却没提示 → 用户以为模型没干活（其实压根没调用）
+    - 分块把 `[mm:ss] 文本` 切断 → 章节大纲的时间戳全乱
+    - 未配置时卡在 `framed` 不置 done → 任务列表永远有个"待汇总"的僵尸任务
+    """
+    from app.core import summarizer as S
+    from app.models.config import Config
+
+    # ---- 跳过条件三态 ----
+    off = Config.from_dict({"summarize": {"enabled": False}}, root=Path(tmp))
+    on_no_key = Config.from_dict({"summarize": {"enabled": True, "api_key_env": "VIDIGEST_NO_SUCH_KEY"}}, root=Path(tmp))
+    import os as _os
+    _os.environ["VIDIGEST_SMOKE_KEY"] = "sk-x"
+    try:
+        ready = Config.from_dict(
+            {"summarize": {"enabled": True, "api_key_env": "VIDIGEST_SMOKE_KEY"}}, root=Path(tmp)
+        )
+        reasons = (S.skip_reason(off), S.skip_reason(on_no_key), S.skip_reason(ready))
+    finally:
+        _os.environ.pop("VIDIGEST_SMOKE_KEY", None)
+    judgements.append(
+        (
+            "汇总跳过条件：未启用 / 无密钥 / 可运行（三态可区分）",
+            "未启用" in (reasons[0] or "") and "为空" in (reasons[1] or "") and reasons[2] is None,
+            f"{reasons}",
+        )
+    )
+
+    # ---- 分块：不切断行、块数合理、超长行硬切 ----
+    lines = [f"[{i:02d}:{(i*7) % 60:02d}] 这是第 {i} 行文本，长度大约几十个字符。\n" for i in range(600)]
+    text = "".join(lines)
+    chunks = S.split_chunks(text, chunk_chars=4000)
+    intact = all(all(ln.startswith("[") for ln in c.splitlines() if ln.strip()) for c in chunks)
+    long_line = "x" * 9000 + "\n"
+    hard = S.split_chunks(long_line, chunk_chars=4000)
+    judgements.append(
+        (
+            "汇总分块：按行切（不切断时间戳行）、超长行硬切",
+            intact and len(chunks) > 1 and all(len(c) <= 4100 for c in chunks) and len(hard) >= 2,
+            f"{len(chunks)} 块；行完整={intact}；超长行切成 {len(hard)} 块",
+        )
+    )
+
+    # ---- 请求体：模型名/温度/消息结构 ----
+    cfg2 = Config.from_dict(
+        {"summarize": {"enabled": True, "model": "deepseek-chat", "api_key_env": "V"}}, root=Path(tmp)
+    )
+    body = S.build_payload(cfg2, [{"role": "user", "content": "hi"}])
+    judgements.append(
+        (
+            "汇总请求体：model 取自配置、含 messages",
+            body.get("model") == "deepseek-chat" and isinstance(body.get("messages"), list),
+            f"model={body.get('model')} temperature={body.get('temperature')}",
+        )
+    )
+
+    # ---- 未配置时：run_summarize 直接置 done、不写 summary.md ----
+    from app.core.store import Store
+    from app.core import pipeline
+    from app.models.task import Task, TaskStatus
+
+    work = Path(tmp) / "sum-work"
+    work.mkdir(parents=True, exist_ok=True)
+    tr = work / "transcript.txt"
+    tr.write_text("[00:00] 测试\n", encoding="utf-8")
+    store = Store(Path(tmp) / "sum-state.db")
+    try:
+        task, _ = store.add(
+            Task(url="https://example.com/x", platform="unknown", title="t", out_dir=str(work))
+        )
+        task.transcript_path = str(tr)
+        store.set_status(task, TaskStatus.FRAMED)
+        pipeline.run_summarize(task, off, store)
+        status = store.get(task.id).status
+        wrote = (work / "summary.md").exists()
+        judgements.append(
+            (
+                "汇总未配置：任务照常 done，且不写 summary.md",
+                status == TaskStatus.DONE.value and not wrote,
+                f"status={status} 写了文件={wrote}",
+            )
+        )
+    finally:
+        store.close()
+
+
 def check_version_consistency(judgements: list[tuple[str, bool, str]]) -> None:
     """5 处版本号必须一致（VERSION / tauri.conf / package.json / Cargo.toml / rpc.py）。
 
@@ -940,6 +1060,8 @@ def main() -> int:
     check_model_dir_detect(tmp, host.judgements)
     check_version_consistency(host.judgements)
     check_platform_registry(host.judgements)
+    check_download_dispatch(tmp, host.judgements)
+    check_summarizer(tmp, host.judgements)
     check_author_listing(tmp, host.judgements)
 
     run_eof_flow(env, host.judgements)
