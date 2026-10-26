@@ -215,7 +215,9 @@ function App() {
           break;
         }
         case "model_download_started": {
+          const pack = String(ev.data.pack ?? "whisper");
           setDownload({
+            pack,
             phase: "running",
             doneBytes: Number(ev.data.already_bytes ?? 0),
             totalBytes: Number(ev.data.total_bytes ?? 0),
@@ -226,12 +228,16 @@ function App() {
             speed: 0,
             eta: 0,
           });
-          pushLog("info", `开始下载模型 ${String(ev.data.model ?? "")}`.trim());
+          pushLog(
+            "info",
+            `开始下载 ${pack === "local_ai" ? "本地视觉模型" : "语音模型"}（${String(ev.data.file_count ?? "?")} 个文件）`,
+          );
           break;
         }
         case "model_download_progress": {
           const d = ev.data;
-          setDownload({
+          setDownload((prev) => ({
+            pack: String(d.pack ?? prev?.pack ?? "whisper"),
             phase: "running",
             doneBytes: Number(d.done_bytes ?? 0),
             totalBytes: Number(d.total_bytes ?? 0),
@@ -241,7 +247,22 @@ function App() {
             file: d.file as string | undefined,
             fileIndex: Number(d.file_index ?? 0),
             fileCount: Number(d.file_count ?? 0),
-          });
+          }));
+          break;
+        }
+        case "model_download_extracting": {
+          // zip 解压不占带宽，但要几十秒 —— 不报进度的话用户会以为下完卡住了
+          const d = ev.data;
+          setDownload((prev) => ({
+            pack: String(d.pack ?? prev?.pack ?? "local_ai"),
+            phase: "extracting",
+            doneBytes: prev?.doneBytes ?? 0,
+            totalBytes: prev?.totalBytes ?? 0,
+            pct: Number(d.pct ?? 0),
+            speed: 0,
+            eta: 0,
+            detail: String(d.detail ?? ""),
+          }));
           break;
         }
         case "model_download_verifying": {
@@ -259,6 +280,7 @@ function App() {
         }
         case "model_download_done": {
           setDownload((prev) => ({
+            pack: String(ev.data.pack ?? prev?.pack ?? "whisper"),
             phase: "done",
             doneBytes: Number(ev.data.total_bytes ?? prev?.doneBytes ?? 0),
             totalBytes: Number(ev.data.total_bytes ?? prev?.totalBytes ?? 0),
@@ -280,6 +302,7 @@ function App() {
         }
         case "model_download_failed": {
           setDownload((prev) => ({
+            pack: String(ev.data.pack ?? prev?.pack ?? "whisper"),
             phase: "failed",
             doneBytes: prev?.doneBytes ?? 0,
             totalBytes: prev?.totalBytes ?? 0,
@@ -294,6 +317,7 @@ function App() {
         }
         case "model_download_cancelled": {
           setDownload((prev) => ({
+            pack: prev?.pack ?? String(ev.data.pack ?? "whisper"),
             phase: "cancelled",
             doneBytes: prev?.doneBytes ?? 0,
             totalBytes: prev?.totalBytes ?? 0,
@@ -558,8 +582,12 @@ function App() {
           }}
           onReload={refreshConfig}
           onDownload={() => {
-            setDownload({ phase: "running", doneBytes: 0, totalBytes: 0, pct: 0, speed: 0, eta: 0 });
-            run("下载模型", api.downloadModel());
+            setDownload({ pack: "whisper", phase: "running", doneBytes: 0, totalBytes: 0, pct: 0, speed: 0, eta: 0 });
+            run("下载模型", api.downloadModel("whisper"));
+          }}
+          onDownloadLocalAI={() => {
+            setDownload({ pack: "local_ai", phase: "running", doneBytes: 0, totalBytes: 0, pct: 0, speed: 0, eta: 0 });
+            run("下载本地视觉模型", api.downloadModel("local_ai"));
           }}
           onCancelDownload={() => run("取消下载", api.cancelModelDownload())}
           onVerify={() => {

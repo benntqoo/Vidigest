@@ -204,6 +204,10 @@ cmd_check() {
   run "$PY" "$REPO/tools/dispatcher_selftest.py"
   step "下载层 —— tools/fetcher_selftest.py"
   run "$PY" "$REPO/tools/fetcher_selftest.py"
+  # 下载器判据用的是本地假 HTTP 服务器（离线、几秒），必须进常规检查 ——
+  # 2026-10-27 之前它不在这里，等于 11 条判据存在但从不执行。
+  step "模型下载器 —— tools/model_downloader_selftest.py"
+  run "$PY" "$REPO/tools/model_downloader_selftest.py"
   step "Rust 单测 —— cargo test --lib"
   ( cd "$REPO/app-ui/src-tauri" || exit 1; run env CARGO_INCREMENTAL=0 cargo test --lib )
   step "前端类型检查 —— tsc --noEmit"

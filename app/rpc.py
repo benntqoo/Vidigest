@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 
 from app.core import ai_backend
+from app.core import asset_packs
 from app.core import concurrency as concurrency_mod
 from app.core import env_probe
 from app.core import model_downloader
@@ -51,7 +52,7 @@ from app.models.config import (
 from app.models.task import Task, TaskStatus
 
 PROTOCOL_VERSION = 1
-SERVER_VERSION = "0.6.0"
+SERVER_VERSION = "0.6.1"
 
 #: 内部事件名 → 协议事件名。
 #: 调度器不感知协议，它只报「发生了什么」；名字翻译在这里做，与 `STAGE_LABELS` 同理。
@@ -188,6 +189,14 @@ class _ProtocolLogHandler(logging.Handler):
 
 
 # ------------------------------------------------------------------ Worker
+
+
+class _BusyOtherPack(Exception):
+    """另一个资产包正在下载。GB 级下载不并发（带宽共享，只会两个都慢）。"""
+
+    def __init__(self, pack_key: str) -> None:
+        super().__init__(pack_key)
+        self.pack_key = pack_key
 
 
 class Worker:
@@ -675,10 +684,11 @@ class Worker:
             )
             return
 
-        # 模型目录 / 模型名变了 ⇒ 旧的下载器指向旧路径，必须重建
+        # 模型目录 / 模型名 / 视觉模型目录变了 ⇒ 旧的下载器指向旧路径，必须重建
         if self._downloader is not None and (
             new_cfg.paths.model_dir != self.cfg.paths.model_dir
             or new_cfg.runtime.model != self.cfg.runtime.model
+            or new_cfg.vision_model_path() != self.cfg.vision_model_path()
         ):
             self._downloader.cancel()
             self._downloader = None
@@ -699,33 +709,67 @@ class Worker:
         )
 
     def _cmd_download_model(self, args: dict[str, Any], req_id: str | None) -> None:
-        """启动模型下载。幂等：已在下载则不重复启动。
+        """启动资产包下载。幂等：同一个包已在下载则不重复启动。
+
+        `args.pack` 缺省为 `whisper`（语音模型）—— 这是 0.6.0 之前的唯一一种，
+        保持缺省值是为了让老前端的调用继续有效。
 
         进度 / 完成 / 失败 / 取消全部以 `model_download_*` 事件异步推送 ——
-        本命令**不阻塞**（下载 2.88 GiB 要几分钟，阻塞主循环会连心都不跳）。
+        本命令**不阻塞**（下载 2.9 GiB 要几分钟，阻塞主循环会连心都不跳）。
         """
-        model = args.get("model") or self.cfg.runtime.model
-        if not isinstance(model, str):
-            self.proto.error("E_BAD_ARGS", "download_model 的 args.model 必须是字符串", req_id=req_id)
+        pack_key = args.get("pack") or "whisper"
+        if not isinstance(pack_key, str):
+            self.proto.error("E_BAD_ARGS", "download_model 的 args.pack 必须是字符串", req_id=req_id)
             return
-        if model != self.cfg.runtime.model:
+        pack = asset_packs.build_pack(pack_key, self.cfg)
+        if pack is None:
             self.proto.error(
                 "E_BAD_ARGS",
-                f"模型名不符：请求 {model}，配置里是 {self.cfg.runtime.model}。"
-                "请先在设置里改 runtime.model 并保存。",
+                f"未知的资产包 {pack_key}；可用：{', '.join(asset_packs.PACK_KEYS)}",
                 req_id=req_id,
             )
             return
 
-        dl = self._ensure_downloader()
+        if pack_key == "whisper":
+            # 语音模型的档位必须与配置一致：下一个 large-v3 却在用 tiny 跑，
+            # 是「下完了仍报模型缺失」这类问题的常见来源。
+            model = args.get("model") or self.cfg.runtime.model
+            if not isinstance(model, str):
+                self.proto.error("E_BAD_ARGS", "download_model 的 args.model 必须是字符串", req_id=req_id)
+                return
+            if model != self.cfg.runtime.model:
+                self.proto.error(
+                    "E_BAD_ARGS",
+                    f"模型名不符：请求 {model}，配置里是 {self.cfg.runtime.model}。"
+                    "请先在设置里改 runtime.model 并保存。",
+                    req_id=req_id,
+                )
+                return
+
+        dl = None
+        try:
+            dl = self._ensure_downloader(pack)
+        except _BusyOtherPack as exc:
+            self.proto.error(
+                "E_BUSY",
+                f"正在下载「{exc.pack_key}」，请等它完成或先取消再下载「{pack_key}」",
+                req_id=req_id,
+            )
+            return
         if dl.running:
             self.proto.emit(
                 "model_download_started",
-                {"model": model, "already_running": True, "model_path": str(dl.model_dir)},
+                {
+                    "pack": dl.pack_key,
+                    "model": dl.model,
+                    "already_running": True,
+                    "model_path": str(dl.model_dir),
+                },
                 req_id,
             )
             return
-        dl.start()
+        if not dl.start():
+            self.proto.error("E_BUSY", "下载线程启动失败，请稍后重试", req_id=req_id)
 
     def _cmd_cancel_model_download(self, args: dict[str, Any], req_id: str | None) -> None:
         dl = self._downloader
@@ -754,22 +798,29 @@ class Worker:
 
     # ---- 设置：内部 ----
 
-    def _ensure_downloader(self) -> model_downloader.ModelDownloader:
+    def _ensure_downloader(self, pack: "asset_packs.AssetPack") -> model_downloader.ModelDownloader:
+        """按包取下载器。**同一时刻只允许一个包在下**。
+
+        为什么不做成「每个包一个下载器并发」：两个都是 GB 级下载，共享同一条
+        带宽，并发只会让两个都变慢，还会让进度条的「剩余时间」失去意义。
+        已有别的包在跑时拒绝（调用方报 `E_BUSY`）。
+        """
+        if self._downloader is not None and self._downloader.pack_key != pack.key:
+            if self._downloader.running:
+                raise _BusyOtherPack(self._downloader.pack_key)
+            self._downloader = None
         if self._downloader is None:
-            self._downloader = model_downloader.ModelDownloader(
-                Path(self.cfg.paths.model_dir),
-                self.cfg.runtime.model,
-                self._on_download_event,
-                base_url=self.cfg.download.base_url,
+            self._downloader = model_downloader.ModelDownloader.for_pack(
+                pack, self._on_download_event
             )
         return self._downloader
 
     def _on_download_event(self, name: str, data: dict[str, Any]) -> None:
         """下载器事件 → 协议帧。下载器本身不感知协议（与 `core/` 的约定一致）。"""
         self.proto.emit(name, data)
-        if name == "model_download_done" and "verified" in data:
-            # 下载完成时已经真实加载过模型 —— 顺手把环境态更新掉，
-            # 用户不必再点一次「重新校验」才看到状态栏变绿。
+        # 只有语音模型的下载结论能更新 GPU 环境态：那是「用一次真实推理校验」的
+        # 结果。视觉模型的校验只验二进制能不能起，混进来会把状态栏写成谬误。
+        if name == "model_download_done" and "verified" in data and data.get("pack") == "whisper":
             self._apply_env_verification(
                 data.get("verified"),
                 str(data.get("detail") or ""),
@@ -788,6 +839,7 @@ class Worker:
             except OSError as exc:  # noqa: PERF203 — 单个文件读不到不该让整页失败
                 logging.warning("统计模型目录大小失败：%s", exc)
         api_key_env = cfg.summarize.api_key_env
+        ai_info = ai_backend.describe(cfg)
         # 语言下拉的选项由**后端下发**：`LANGUAGE_LABELS` 是唯一真源，
         # 前端不另存一份（两份表必然漂移，而且漂移后没人会发现）。
         languages = [{"code": LANGUAGE_AUTO, "label": "自动检测"}]
@@ -795,11 +847,20 @@ class Worker:
             {"code": code, "label": f"{label}（{code}）"}
             for code, label in LANGUAGE_LABELS.items()
         ]
+        # 可下载资产包的清单也由后端下发：加一个新包不该要求前端也改一次。
+        # `present` 是「现在就能用吗」，不是「文件下过吗」——半截的下载不算。
+        packs = asset_packs.pack_summary(cfg)
+        for p in packs:
+            if p["key"] == "whisper":
+                p["present"] = not missing
+            elif p["key"] == "local_ai":
+                p["present"] = bool(ai_info.get("local_ready"))
         return {
             "path": str(self.config_path),
             "is_default": self.config_is_default,
             "config": cfg.to_dict(),
             "languages": languages,
+            "packs": packs,
             "model_path": str(model_path),
             "model_present": not missing,
             "model_missing_files": missing,
@@ -813,9 +874,11 @@ class Worker:
             # 「现在会用哪个后端」的诊断。**不启动任何进程** —— 只是看文件在不在、
             # 端口通不通，界面据此显示「本地模型 / 云端 / 都没有」。
             # 不在启动时真起 llama-server：有用户根本不看画面，不该替他付 3 GiB 显存。
-            "ai": ai_backend.describe(cfg),
+            "ai": ai_info,
             "pipeline_state": self.dispatcher.state.value,
-            "download": self._downloader.status() if self._downloader else {"running": False},
+            "download": self._downloader.status()
+            if self._downloader
+            else {"running": False, "pack": None},
         }
 
     def _cmd_clear_data(self, args: dict[str, Any], req_id: str | None) -> None:

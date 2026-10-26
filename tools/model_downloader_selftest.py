@@ -31,7 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from app.core import model_downloader  # noqa: E402
+from app.core import asset_packs, model_downloader  # noqa: E402
 from app.core.env_probe import MODEL_FILES  # noqa: E402
 
 
@@ -354,6 +354,145 @@ def run_case_404(server: Server, tmp: Path) -> None:
     )
 
 
+def _zip_bytes(entries: dict[str, bytes]) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+def run_case_unzip(server: Server, tmp: Path) -> None:
+    """本地视觉模型包：zip 下完自动解压到 dest_dir，并删掉原包。"""
+    Handler.files = {
+        "fake-llama.zip": _zip_bytes(
+            {
+                "llama-server.exe": b"MZ" + b"s" * 600,
+                "llama-server-impl.dll": b"D" * 2048,
+                "ggml-cuda.dll": b"G" * 512,
+            }
+        ),
+        # 完整性检查要求「主权重 + mmproj」都在，否则会 E_MODEL_INCOMPLETE。
+        # 内容无所谓：`--version` 校验会失败但**不该判下载失败**（见下面的断言）。
+        "Qwen3-VL-2B-Instruct-Q4_K_M.gguf": b"Q" * 4096,
+        "mmproj-BF16.gguf": b"P" * 2048,
+    }
+    Handler.range_log = []
+    Handler.delay = 0.0
+    Handler.length_bias = {}
+
+    home = fresh_dir(tmp, "unzip")
+    target = home / "vlm"
+    pack = asset_packs.AssetPack(
+        key="local_ai",
+        title="测试用",
+        target_dir=target,
+        files=(
+            asset_packs.AssetFile(
+                name="fake-llama.zip",
+                url=f"http://127.0.0.1:{server.port}/x/fake-llama.zip",
+                dest_dir="llama",
+                unzip=True,
+            ),
+            asset_packs.AssetFile(
+                name="Qwen3-VL-2B-Instruct-Q4_K_M.gguf",
+                url=f"http://127.0.0.1:{server.port}/x/Qwen3-VL-2B-Instruct-Q4_K_M.gguf",
+            ),
+            asset_packs.AssetFile(
+                name="mmproj-BF16.gguf",
+                url=f"http://127.0.0.1:{server.port}/x/mmproj-BF16.gguf",
+            ),
+        ),
+    )
+    rec = Recorder()
+    dl = model_downloader.ModelDownloader.for_pack(pack, rec)
+    dl.start()
+    done = rec.wait("model_download_done", timeout=60)
+    failed = rec.last("model_download_failed")
+
+    out = target / "llama"
+    ok_files = (
+        (out / "llama-server.exe").is_file()
+        and (out / "llama-server.exe").read_bytes() == b"MZ" + b"s" * 600
+        and (out / "llama-server-impl.dll").is_file()
+        and (out / "ggml-cuda.dll").is_file()
+    )
+    # 原 zip 必须被删：留着等于白占 587 MiB（真包体积）
+    zip_gone = not (out / "fake-llama.zip").exists()
+    record(
+        "zip 包：解压到 dest_dir 且删除原包",
+        ok_files and zip_gone and "model_download_extracting" in rec.names() and done is not None,
+        f"文件齐={ok_files} 原包已删={zip_gone} done={done is not None} failed={failed}",
+    )
+    # 「假 exe 起不来」是**校验**结论，不是下载结论 —— 两者混为一谈会让用户
+    # 以为 2.3 GiB 白下了。
+    record(
+        "本地包：二进制起不来只判 verified=False，不判下载失败",
+        done is not None and done.get("verified") is False and failed is None,
+        f"verified={done.get('verified') if done else None} "
+        f"reason={done.get('blocked_reason') if done else None} failed={failed}",
+    )
+
+
+def run_case_zip_slip(server: Server, tmp: Path) -> None:
+    """压缩包里的路径穿越条目必须被跳过，且不能写到目录外。"""
+    Handler.files = {
+        "evil.zip": _zip_bytes(
+            {
+                "../../evil.txt": b"pwned",
+                # 顺带放一个合法条目：确认「跳过坏条目」不影响好条目照解。
+                # 放 llama-server.exe 是为了让完整性检查通过，不制造无关的失败日志。
+                "llama-server.exe": b"MZ" + b"s" * 600,
+                "ok.txt": b"fine",
+            }
+        ),
+        "Qwen3-VL-2B-Instruct-Q4_K_M.gguf": b"Q" * 4096,
+        "mmproj-BF16.gguf": b"P" * 2048,
+    }
+    Handler.range_log = []
+    Handler.delay = 0.0
+    Handler.length_bias = {}
+
+    home = fresh_dir(tmp, "slip")
+    target = home / "vlm"
+    pack = asset_packs.AssetPack(
+        key="local_ai",
+        title="测试用",
+        target_dir=target,
+        files=(
+            asset_packs.AssetFile(
+                name="evil.zip",
+                url=f"http://127.0.0.1:{server.port}/x/evil.zip",
+                dest_dir="llama",
+                unzip=True,
+            ),
+            asset_packs.AssetFile(
+                name="Qwen3-VL-2B-Instruct-Q4_K_M.gguf",
+                url=f"http://127.0.0.1:{server.port}/x/Qwen3-VL-2B-Instruct-Q4_K_M.gguf",
+            ),
+            asset_packs.AssetFile(
+                name="mmproj-BF16.gguf",
+                url=f"http://127.0.0.1:{server.port}/x/mmproj-BF16.gguf",
+            ),
+        ),
+    )
+    rec = Recorder()
+    dl = model_downloader.ModelDownloader.for_pack(pack, rec)
+    dl.start()
+    rec.wait("model_download_done", timeout=60)
+
+    inside = (target / "llama" / "ok.txt").is_file()
+    escaped = (home / "evil.txt").exists() or (target / "evil.txt").exists()
+    record(
+        "zip 路径穿越：跳过越界条目，正常条目照解",
+        inside and not escaped,
+        f"ok.txt={inside} 越界写出={escaped}",
+    )
+
+
 def main() -> int:
     # 下载完成后的「校验」会真去 import faster_whisper 并加载假模型 —— 这一步在本机
     # 有依赖时会花 1-2 秒并返回 False（`cuda_load_failed`），正是我们要的「如实上报」。
@@ -367,6 +506,8 @@ def main() -> int:
             run_case_size_mismatch(server, tmp)
             run_case_disk_full(server, tmp)
             run_case_404(server, tmp)
+            run_case_unzip(server, tmp)
+            run_case_zip_slip(server, tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

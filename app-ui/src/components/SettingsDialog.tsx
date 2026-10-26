@@ -19,6 +19,7 @@ import type {
   PipelineState,
 } from "../worker/types";
 import { ModelPanel } from "./ModelPanel";
+import { DownloadNote, DownloadProgress, isDownloadActive } from "./DownloadProgress";
 import { pickDirectory, pickFile } from "../worker/pickDir";
 
 interface Props {
@@ -36,6 +37,8 @@ interface Props {
   onSave: (patch: Record<string, unknown>) => void;
   onReload: () => void;
   onDownload: () => void;
+  /** 下载本地视觉模型（llama-server + Qwen3-VL 权重，约 2.3 GiB） */
+  onDownloadLocalAI: () => void;
   onCancelDownload: () => void;
   onVerify: () => void;
   onClearData: (scope: "history" | "workspace" | "all") => void;
@@ -83,6 +86,7 @@ export function SettingsDialog({
   onSave,
   onReload,
   onDownload,
+  onDownloadLocalAI,
   onCancelDownload,
   onVerify,
   onClearData,
@@ -101,6 +105,12 @@ export function SettingsDialog({
 
   const busy = pipeline !== "idle";
   const readOnly = busy || applying;
+
+  // 同一时刻只可能有一个包在下（后端保证），按 `pack` 分给两个面板显示 ——
+  // 不分开的话，下视觉模型时「语音模型」那一栏也会开始转进度条。
+  const whisperDownload = download && (download.pack ?? "whisper") === "whisper" ? download : null;
+  const localAIDownload = download?.pack === "local_ai" ? download : null;
+  const localAIPack = info?.packs?.find((p) => p.key === "local_ai") ?? null;
 
   const patch = useMemo(() => (draft ? normalize(draft) : null), [draft]);
 
@@ -195,7 +205,7 @@ export function SettingsDialog({
         <div className="settings-body">
           <ModelPanel
             info={info}
-            download={download}
+            download={whisperDownload}
             readOnly={readOnly}
             verifying={verifying}
             onDownload={onDownload}
@@ -614,11 +624,41 @@ export function SettingsDialog({
                 <span className="chip chip-ok"> 服务运行中</span>
               ) : null}
               <br />
-              需要两样东西：`llama-server.exe`（llama.cpp 官方发布包）和
-              Qwen3-VL-2B 的 GGUF 权重（约 1.8 GB，放
-              <code> {info.ai.local_model_dir} </code>）。
-              起不来时**自动回退**上面的云接口，不会让任务失败。
+              一次下载取齐三样：llama.cpp 运行包（含 33 个 CUDA DLL）、Qwen3-VL-2B 的
+              GGUF 权重、视觉投影器 mmproj —— 共约 {localAIPack?.approx_human || "2.3 GiB"}
+              ，解压后另需约 0.7 GiB。落点 <code>{localAIPack?.target_dir ?? info.ai.local_model_dir}</code>
+              ，**不进安装包**，断点续传。起不来时自动回退上面的云接口，不会让任务失败。
+              下载完还要打开下面的「画面理解」开关，模型才会真的去看拼版图。
             </p>
+            <DownloadProgress download={localAIDownload} />
+            <DownloadNote download={localAIDownload} />
+            <div className="settings-actions">
+              {isDownloadActive(localAIDownload) ? (
+                <button
+                  className="danger"
+                  onClick={onCancelDownload}
+                  disabled={localAIDownload?.phase === "verifying"}
+                >
+                  取消下载
+                </button>
+              ) : (
+                <button
+                  className="primary"
+                  onClick={onDownloadLocalAI}
+                  disabled={
+                    readOnly ||
+                    (isDownloadActive(download) && download?.pack !== "local_ai")
+                  }
+                  title={
+                    isDownloadActive(download) && download?.pack !== "local_ai"
+                      ? "另一个模型正在下载，等它完成或先取消"
+                      : "从 GitHub / hf-mirror 下载运行包与权重，支持断点续传"
+                  }
+                >
+                  {localAIPack?.present ? "重新下载 / 补全" : "下载本地视觉模型"}
+                </button>
+              )}
+            </div>
             <label className="field">
               <span className="field-label">
                 llama-server 路径

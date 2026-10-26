@@ -188,10 +188,16 @@ class LocalServer:
         timeout = float(getattr(la, "startup_timeout", 120.0))
         ready = _wait_ready(base, proc, timeout)
         if not ready:
+            tail = _tail_log(log_path)
             if proc.poll() is not None:
+                hint = ""
+                if "bind" in tail.lower() or "port" in tail.lower():
+                    # 端口冲突是最常见的一种，而且用户自己完全看得出来
+                    # 「换个端口」怎么办 —— 前提是错误信息里得写出来。
+                    hint = f"（端口 {port} 可能已被占用，可在设置里换一个）"
                 self.last_error = (
-                    f"llama-server 启动后退出（退出码 {proc.returncode}），"
-                    f"详见 {log_path}"
+                    f"llama-server 启动后退出（退出码 {proc.returncode}）{hint}："
+                    f"{tail or '日志无输出'}。详见 {log_path}"
                 )
             else:
                 self.last_error = f"llama-server 在 {timeout:.0f} 秒内未就绪，详见 {log_path}"
@@ -365,6 +371,28 @@ def _wait_ready(base: str, proc: subprocess.Popen, timeout: float) -> bool:
             return True
         time.sleep(0.4)
     return False
+
+
+def _tail_log(log_path: Path, limit: int = 400) -> str:
+    """从 llama-server 日志里取「为什么起不来」。
+
+    为什么必须做：`llama-server` 把失败原因**只写进日志**，退出码永远是 1。
+    界面上只说「启动后退出（退出码 1），详见 <路径>」，等于把用户丢给一个文件 ——
+    而实际原因往往只有一句（端口被占、模型文件损坏、CUDA 版本不匹配），
+    并且那一句就在最后几行里。
+    """
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    # llama.cpp 的格式是 `0.00.787.496 E srv  ...`；取最后几条 E 行，
+    # 没有 E 行就退回最后几行（有些错误只打 W 或纯文本）。
+    errs = [ln for ln in lines if " E " in ln or ln.startswith("error") or "Error" in ln]
+    pick = (errs or lines)[-3:]
+    return " / ".join(pick)[:limit]
 
 
 def _find_server(la: object, model_dir: Path) -> Path | None:

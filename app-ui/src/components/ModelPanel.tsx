@@ -5,9 +5,11 @@
 // 2. 「模型未安装」这个入口会从状态栏直接点进来，将来也可能单独复用。
 
 import { formatBytes, type ConfigInfo, type DownloadState } from "../worker/types";
+import { DownloadNote, DownloadProgress, isDownloadActive } from "./DownloadProgress";
 
 interface Props {
   info: ConfigInfo | null;
+  /** 只传**语音模型**的下载状态：同一时刻只可能有一个包在下，按 pack 过滤过 */
   download: DownloadState | null;
   /** 有任务在跑时只读（改配置会重启 worker = 中断任务，D-S1） */
   readOnly: boolean;
@@ -16,26 +18,6 @@ interface Props {
   onCancelDownload: () => void;
   onVerify: () => void;
   onReload: () => void;
-}
-
-function phaseText(d: DownloadState | null): string {
-  if (!d) return "";
-  switch (d.phase) {
-    case "running":
-      return d.totalBytes > 0 ? `下载中 ${Math.round(d.pct * 100)}%` : "下载中…";
-    case "verifying":
-      return "校验中（用一次真实推理确认能加载）…";
-    case "done":
-      if (d.verified === true) return `完成，GPU 可用（${d.elapsedSec ?? "?"} s）`;
-      if (d.verified === false) return "文件已下完，但真实推理失败 —— 见下方说明";
-      return "文件已就绪（未校验）";
-    case "failed":
-      return `失败（${d.code ?? "E_?"}）`;
-    case "cancelled":
-      return "已取消";
-    default:
-      return "";
-  }
 }
 
 export function ModelPanel({
@@ -48,8 +30,7 @@ export function ModelPanel({
   onVerify,
   onReload,
 }: Props) {
-  const running = download?.phase === "running" || download?.phase === "verifying";
-  const pct = download ? Math.max(0, Math.min(1, download.pct)) : 0;
+  const running = isDownloadActive(download);
   const missing = info?.model_missing_files ?? [];
 
   return (
@@ -79,56 +60,9 @@ export function ModelPanel({
 
       {/* 下载进度。总量未知时（服务端没给 Content-Length）不画百分比，
           而不是画一个永远 0% 的条 —— 后者看起来像卡住了。 */}
-      {running && (
-        <div className="download-box">
-          <div className="download-progress">
-            <div
-              className={`progress-fill${download?.phase === "verifying" ? " progress-indeterminate" : ""}`}
-              style={{ width: `${Math.round(pct * 100)}%` }}
-            />
-          </div>
-          <div className="download-meta">
-            <span>{phaseText(download)}</span>
-            {download?.phase === "running" && (
-              <>
-                <span className="muted">
-                  {formatBytes(download.doneBytes)} / {formatBytes(download.totalBytes)}
-                </span>
-                {download.speed > 0 && (
-                  <span className="muted">{formatBytes(download.speed)}/s</span>
-                )}
-                {download.eta > 0 && (
-                  <span className="muted">剩 {Math.round(download.eta)} s</span>
-                )}
-                {download.file && (
-                  <span className="muted">
-                    {(download.fileIndex ?? 0) > 0
-                      ? `第 ${download.fileIndex}/${download.fileCount ?? "?"} 个：`
-                      : ""}
-                    {download.file}
-                  </span>
-                )}
-              </>
-            )}
-          </div>
-        </div>
-      )}
+      <DownloadProgress download={download} />
 
-      {/* 终态文案：必须可操作。只说「失败」等于没说。 */}
-      {!running && download && download.phase !== "idle" && (
-        <p
-          className={
-            download.phase === "failed"
-              ? "model-note model-note-error"
-              : download.phase === "done"
-                ? "model-note model-note-ok"
-                : "model-note"
-          }
-        >
-          {phaseText(download)}
-          {download.detail ? ` —— ${download.detail}` : ""}
-        </p>
-      )}
+      <DownloadNote download={download} />
 
       <div className="settings-actions">
         {running ? (

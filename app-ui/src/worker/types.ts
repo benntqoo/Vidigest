@@ -273,12 +273,29 @@ export interface ConfigInfo {
     active: "local" | "cloud" | "none";
   };
   pipeline_state: PipelineState;
-  download: { running?: boolean };
+  download: { running?: boolean; pack?: string | null };
+  /** 可下载资产包的清单，**由后端下发**（加一个新包不该要求前端也改一次） */
+  packs: PackInfo[];
+}
+
+/** 一个可下载的资产包（语音模型 / 本地视觉模型）。 */
+export interface PackInfo {
+  key: string;
+  title: string;
+  target_dir: string;
+  file_count: number;
+  /** 估算下载量；0 表示不知道（例如语音模型的大小随档位变） */
+  approx_bytes: number;
+  approx_human: string;
+  /** 现在就能用吗 —— 不是「下过吗」，半截的下载不算 */
+  present: boolean;
 }
 
 /** 模型下载的界面状态。事件是增量推送的，这里合成一个可渲染的快照。 */
 export interface DownloadState {
-  phase: "idle" | "running" | "verifying" | "done" | "failed" | "cancelled";
+  /** 正在下哪个资产包。同一时刻只有一个（后端保证），界面按它决定谁显示进度 */
+  pack?: string;
+  phase: "idle" | "running" | "extracting" | "verifying" | "done" | "failed" | "cancelled";
   file?: string;
   fileIndex?: number;
   fileCount?: number;

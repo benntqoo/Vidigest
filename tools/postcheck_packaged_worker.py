@@ -135,6 +135,28 @@ def main() -> int:
             f"{len(langs)} 项，首项={langs[0] if langs else None}",
         )
 
+        # 1c. 资产包清单必须由**产物**下发。
+        # 2026-10-27 加这条的原因：`asset_packs.py` 是新模块，PyInstaller 若漏收，
+        # 源码判据全绿而产物里 `get_config` 直接缺字段 —— 只有对着 exe 跑才看得见。
+        packs = {p.get("key"): p for p in (ev.get("packs") or [])}
+        record(
+            "get_config 下发 packs（whisper + local_ai 两个包）",
+            set(packs) == {"whisper", "local_ai"}
+            and all(str(p.get("target_dir") or "").strip() for p in packs.values()),
+            f"keys={sorted(packs)} local_ai_target={packs.get('local_ai', {}).get('target_dir')}",
+        )
+
+        # 1d. 下载命令认识的 `pack` 参数：未知值必须回 E_BAD_ARGS 而不是静默当 whisper。
+        # **不真下载** —— 这里只验参数校验还在产物里。
+        c.send("download_model", {"pack": "no_such_pack"})
+        f = c.wait({"error"}, timeout=15)
+        code = ((f or {}).get("data") or {}).get("code")
+        record(
+            "download_model 未知 pack → E_BAD_ARGS（不误判成 whisper）",
+            code == "E_BAD_ARGS",
+            f"code={code}",
+        )
+
         # 2. set_config 拒绝 api_key
         # 注意：实现的口径是「丢弃 + 警告」，**不是整体失败**（`app/rpc.py:603-606`）。
         c.send("set_config", {"patch": {"summarize": {"api_key": "sk-should-not-be-written", "enabled": True}}})

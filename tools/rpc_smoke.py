@@ -323,11 +323,24 @@ def run_main_flow(env: dict[str, str]) -> Host:
         "api_key_env",
         "api_key_present",
         "download",
+        "packs",
+        "ai",
     }
     host.record(
         "get_config 返回全量配置 + 模型元信息",
         cfg_evt is not None and needed.issubset(cd.keys()) and isinstance(cd.get("config"), dict),
         f"缺字段={sorted(needed - set(cd.keys()))} model_present={cd.get('model_present')}",
+    )
+    packs = {p.get("key"): p for p in (cd.get("packs") or [])}
+    ai_info = cd.get("ai") or {}
+    host.record(
+        "get_config 下发资产包清单，present 与真实状态一致",
+        set(packs) == {"whisper", "local_ai"}
+        and packs["whisper"].get("present") == bool(cd.get("model_present"))
+        and packs["local_ai"].get("present") == bool(ai_info.get("local_ready"))
+        and all(isinstance(p.get("target_dir"), str) for p in packs.values()),
+        f"packs={sorted(packs)} whisper={packs.get('whisper', {}).get('present')} "
+        f"local_ai={packs.get('local_ai', {}).get('present')}",
     )
     # ---- 设置：set_config 的安全边界 ----
     host.send(
@@ -822,6 +835,84 @@ def check_platform_registry(judgements: list[tuple[str, bool, str]]) -> None:
     )
 
 
+def check_asset_packs(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
+    """可下载资产包：清单、落点、与查找规则的一致性。
+
+    这几条守的是**「下完了却说找不到」**——下载落点与 `ai_backend` 的查找规则
+    一旦分叉，症状是 `local_ready=False` 而磁盘上文件明明在，日志里只会说
+    「找不到 llama-server」。这类错从现象上看很像下载失败，实际一行路径对不上。
+    """
+    from app.core import ai_backend
+    from app.core import asset_packs as A
+    from app.core import model_downloader
+    from app.core.env_probe import MODEL_FILES
+    from app.models.config import Config
+
+    root = Path(tmp) / "assets"
+    cfg = Config.from_dict({}, root=str(root))
+
+    # ---- whisper 清单没被重构改掉 ----
+    wp = A.build_pack("whisper", cfg)
+    names = [f.name for f in wp.files]
+    judgements.append(
+        (
+            "资产包 whisper：文件清单仍与 MODEL_FILES 全等",
+            names == list(MODEL_FILES) and wp.target_dir == cfg.model_path(),
+            f"{len(names)} 个 一致={names == list(MODEL_FILES)} target={wp.target_dir == cfg.model_path()}",
+        )
+    )
+
+    # ---- local_ai 的落点 ----
+    la = A.build_pack("local_ai", cfg)
+    zips = [f for f in la.files if f.unzip]
+    ggufs = [f for f in la.files if f.name.lower().endswith(".gguf")]
+    judgements.append(
+        (
+            "资产包 local_ai：目标目录 = vision_model_path，zip 落 llama/",
+            la is not None
+            and la.target_dir == cfg.vision_model_path()
+            and len(zips) == 2
+            and all(f.dest_dir == "llama" for f in zips)
+            and len(ggufs) == 2
+            and all(f.dest_dir == "" for f in ggufs),
+            f"target={la.target_dir == cfg.vision_model_path()} zip={len(zips)} gguf={len(ggufs)}",
+        )
+    )
+
+    # ---- 落点 → 查找：真的建文件，看 ai_backend 认不认得 ----
+    probe = Path(tmp) / "layout"
+    (probe / "llama").mkdir(parents=True, exist_ok=True)
+    (probe / "llama" / "llama-server.exe").write_bytes(b"MZ")
+    (probe / "Qwen3-VL-2B-Instruct-Q4_K_M.gguf").write_bytes(b"Q")
+    (probe / "mmproj-BF16.gguf").write_bytes(b"P")
+    server = ai_backend._find_server(None, probe)
+    main, mmproj = ai_backend._find_weights(probe)
+    dl_server = model_downloader._find_llama_server(probe)
+    judgements.append(
+        (
+            "资产包落点与 ai_backend 的查找规则一致（下载完立刻能认出来）",
+            server is not None
+            and dl_server == server
+            and main is not None
+            and main.name.startswith("Qwen3-VL")
+            and mmproj is not None
+            and "mmproj" in mmproj.name,
+            f"server={server.name if server else None} main={main.name if main else None} "
+            f"mmproj={mmproj.name if mmproj else None}",
+        )
+    )
+
+    # ---- 未知 key ----
+    judgements.append(
+        (
+            "资产包：未知 key 返回 None，PACK_KEYS 每个都能建",
+            A.build_pack("nope", cfg) is None
+            and all(A.build_pack(k, cfg) is not None for k in A.PACK_KEYS),
+            f"keys={A.PACK_KEYS} unknown=None",
+        )
+    )
+
+
 def check_author_listing(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
     """`list_author` 的归一化：**只有拼得出可下载地址的条目才允许出现**。
 
@@ -1200,6 +1291,7 @@ def main() -> int:
     check_platform_registry(host.judgements)
     check_download_dispatch(tmp, host.judgements)
     check_summarizer(tmp, host.judgements)
+    check_asset_packs(tmp, host.judgements)
     check_ai_backend(tmp, host.judgements)
     check_author_listing(tmp, host.judgements)
 

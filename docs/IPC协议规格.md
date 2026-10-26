@@ -87,7 +87,7 @@ logging.basicConfig(stream=sys.stderr, ...)
 | `data_cleared` | `{"scope","tasks_removed","files_removed","errors"}` | 清空完成。`files_removed` 是文件数；`errors` 是删不掉的条目（被占用） |
 | `config` | 全量配置 + 元信息（模型路径 / 是否齐全 / 大小 / 只读字段 / 密钥是否就位 / **转写语言选项**）。**v1.2 新增** |
 | `set_config` | `{"patch": {<section>: {<key>: <value>}}}` | `config_saved` | 部分更新配置。**写盘后必须重启 worker 才生效**（§3.2）。**v1.2 新增** |
-| `download_model` | `{"model": "large-v3"}` | `model_download_started` → `model_download_*` | 下载模型（约 2.9 GiB），异步推事件。幂等：已在下载则不重复启动。**v1.2 新增** |
+| `download_model` | `{"pack": "whisper"\|"local_ai", "model": "large-v3"}` | `model_download_started` → `model_download_*` | 下载资产包（语音模型 2.9 GiB / 本地视觉模型 2.35 GiB），异步推事件。`pack` 缺省 `whisper`。幂等：同一个包已在下载则不重复启动；**别的包在下回 `E_BUSY`**。**v1.10 起泛化为资产包** |
 | `cancel_model_download` | `{}` | `model_download_cancelled` | 取消下载，线程在下一个 chunk 边界退出并删 `.part`。**v1.2 新增** |
 | `verify_env` | `{}` | `env_verify_started` → `env_verified` | 手动重跑一次 GPU 真实验证（设置页「重新校验」）。**v1.2 新增** |
 | `clear_data` | `{"scope":history / workspace / all}` | `data_cleared` | 清空任务历史 / 工作目录内容。**不碰 `model_dir`**。有任务在跑回 `E_BUSY`。**v1.5 新增** |
@@ -214,29 +214,52 @@ paths / runtime / transcribe / frames / summarize / local_ai / vision / download
 
 `gpu_verified` 与它保持一致：`gpu_usable !== null` 才为 `true`。
 
-### 3.2.4 模型下载：事件流与续传
+### 3.2.4 资产包下载：事件流与续传
+
+**v1.10 起「模型下载」泛化为「资产包下载」**：`pack` 决定下什么，传输逻辑是同一套。
 
 ```
-download_model
-  → model_download_started   {model, model_path, total_bytes, file_count, already_bytes}
-  → model_download_progress  {file, file_index, file_count, done_bytes, total_bytes,
-                              overall_pct, file_done_bytes, file_total_bytes,
-                              bytes_per_sec, eta_sec}
-  → model_download_verifying {detail}
-  → model_download_done      {model, model_path, total_bytes, elapsed_sec,
-                              verified, detail, blocked_reason}
+download_model  {pack?: "whisper" | "local_ai", model?: string}
+  → model_download_started    {pack, model, model_path, total_bytes, file_count, already_bytes}
+  → model_download_progress   {pack, file, file_index, file_count, done_bytes, total_bytes,
+                               overall_pct, file_done_bytes, file_total_bytes,
+                               bytes_per_sec, eta_sec}
+  → model_download_extracting {pack, file, detail, pct}          ← 仅含 zip 的包（local_ai）
+  → model_download_verifying  {pack, detail}
+  → model_download_done       {pack, model, model_path, total_bytes, elapsed_sec,
+                               verified, detail, blocked_reason}
 ```
 
-失败 / 取消：`model_download_failed {code, detail}`、`model_download_cancelled {detail}`。
+失败 / 取消：`model_download_failed {pack, code, detail}`、`model_download_cancelled {pack, detail}`。
 
-- **文件清单**（`env_probe.MODEL_FILES`）：`config.json`、`preprocessor_config.json`、
-  `tokenizer.json`、`vocabulary.json`、`model.bin`（合计约 2.88 GiB）
+- `args.pack` 缺省 `"whisper"`（0.6.0 之前的唯一一种，保持缺省是为了老前端不改）。
+  未知 pack → `E_BAD_ARGS`。
+- **同一时刻只允许一个包在下**：另一个在下时新的请求回 `E_BUSY`。两个都是 GB 级，
+  并发只共享带宽，还会让 ETA 失去意义。
+
+| pack | 内容 | 下载量 | 落点 |
+|---|---|---|---|
+| `whisper` | `env_probe.MODEL_FILES` 5 个文件 | 2.88 GiB | `<model_dir>/<runtime.model>/` |
+| `local_ai` | llama.cpp 运行包 ×2（zip）+ Qwen3-VL-2B Q4_K_M + mmproj-BF16 | 2.35 GiB（解压 +0.72 GiB） | `<vision_model_path>/`，zip 解到其下 `llama/` |
+
+- **文件清单在 `app/core/asset_packs.py`**：加一种资产 = 加一个 `AssetPack`，
+  传输逻辑（`model_downloader.py`）一行不动
 - **续传**：每文件先写 `<name>.part`，完成后 `os.replace` 原子改名；重下时带
   `Range: bytes=<part 长度>-`。服务端忽略 Range（返回 200）时清空重写，
   不会把完整内容追加到半成品后面
 - **节流**：`≥ 200 ms` 或 `≥ 1%` 才发一次（`model.bin` 按 256 KiB 分块约 1.2 万次读取）
-- **校验 = 大小比对 + 一次真实加载**（`verify_cuda`），不是哈希 —— 无权威 sha256
-  来源，而「能加载并跑出结果」是比哈希更强的判据
+- **校验**：
+  - `whisper` = 大小比对 + 一次真实加载（`verify_cuda`），不是哈希 —— 无权威
+    sha256 来源，而「能加载并跑出结果」是比哈希更强的判据
+  - `local_ai` = 文件齐备 + `llama-server --version`（**不加载模型**：那要 3.2 GiB
+    显存，且与「下载是否成功」无关）
+  - 两者都是：**校验不过只体现在 `verified` / `blocked_reason`，不把下载判成失败**
+- **zip 解压**：整包解压（不挑文件）——`llama-server.exe` 只有 9 KiB，实现全在
+  `llama-server-impl.dll`，且 `ggml-cpu-*.dll` 按 CPU 微架构运行时挑。挑文件省不下
+  多少体积，却会造成「在我机器上好好的，用户机器缺 DLL」。解压后删原包，
+  解压阶段另需磁盘（预检按 `DISK_UNZIP_RATIO = 2.0` 预留）
+- **zip-slip 防护**：绝对路径、`..` 段、盘符冒号一律跳过（`_safe_target`），
+  跳过的条目写 warning
 - **磁盘预检**：空间不足直接 `E_DISK_FULL`，**不开始传输**
 - **`done_bytes` / `total_bytes` / `overall_pct` 是整体进度**，
   `file_*` 才是当前文件 —— 进度条用整体，那行「第 3/5 个：tokenizer.json」用当前文件
@@ -259,7 +282,7 @@ download_model
 | `douyin_login_state` | `{"state","message"}` | 抖音登录进度。`waiting` 表示窗口已开、等扫码 |
 | `author_page` | `{"platform","title","total","truncated","url","items":[{"url","title","duration","item_id","thumb"}]}` | 作者作品列表。`url` 可直接交给 `add_tasks`；`truncated=true` 表示还有更多 |
 | `data_cleared` | `{"scope","tasks_removed","files_removed","errors"}` | 清空完成。`files_removed` 是文件数；`errors` 是删不掉的条目（被占用） |
-| `config` | `{"path","is_default","config","languages","work_dir_exists","model_path","model_present","model_missing_files","model_size_bytes","read_only_fields","api_key_env","api_key_present","ai","pipeline_state","download"}` | `get_config` 的响应，见 §3.2。`languages` 是 `[{code,label}]`，首项 `code=""` = 自动检测；**选项由后端下发，前端不另存一份**（两份表必然漂移）。`ai` 是「会用哪个后端」的诊断（`active` / `local_ready` / `local_running` 等），**只探测不启动进程** |
+| `config` | `{"path","is_default","config","languages","packs","work_dir_exists","model_path","model_present","model_missing_files","model_size_bytes","read_only_fields","api_key_env","api_key_present","ai","pipeline_state","download"}` | `get_config` 的响应，见 §3.2。`languages` 是 `[{code,label}]`，首项 `code=""` = 自动检测；**选项由后端下发，前端不另存一份**（两份表必然漂移）。`ai` 是「会用哪个后端」的诊断（`active` / `local_ready` / `local_running` 等），**只探测不启动进程**。`packs` 是可下载资产包清单 `[{key,title,target_dir,file_count,approx_bytes,approx_human,present}]`，`present` 是「现在就能用吗」而不是「下过吗」 |
 | `config_saved` | `{"path","config","warnings": [...], "restart_required": true}` | `set_config` 的响应。**Rust 收到后重启 worker**，见 §3.2.2 |
 | `model_download_started` / `_progress` / `_verifying` / `_done` / `_failed` / `_cancelled` | 见 §3.2.4 | 模型下载事件流 |
 | `env_verify_started` | `{}` | `verify_env` 的命令回执；随后会来一条 `env_verified` |
@@ -489,6 +512,10 @@ stdout 写入     → 加锁后单线程写入（JSON Lines 天然按行独立�
 | 51 | 汇总请求体 | `model` 取自配置、含 `messages` |
 | 52 | 汇总未配置时照常 done | 不写 `summary.md`、任务不卡在 `framed` |
 | 53 | `fetcher.download` 按平台分发（本地不递归）| 平台层建了必须真接上 |
+| 60 | 资产包清单与查找规则一致 | 下载落点必须能被 `ai_backend._find_server/_find_weights` 认出来；分叉的症状是「下完了却说找不到」|
+| 61 | 资产包：未知 key | `build_pack` 返回 `None`，RPC 回 `E_BAD_ARGS`；`PACK_KEYS` 每个都能建 |
+| 62 | `get_config.packs` | `present` 是「现在就能用吗」而不是「下过吗」，且与 `model_present` / `ai.local_ready` 一致 |
+| 63 | zip 解压与 zip-slip | 解压到 `dest_dir` 并删原包；`../` 条目被跳过且不写到目录外 |
 | 41 | 模型探测只认「数据目录 + 安装目录」 | 非系统盘上的 `<盘>:\Vidigest\models` **不再被识别**（否则会出现「模型放安装目录了却用了 D 盘那份」）|
 
 **判据 1 是最有价值的一条**：它用一个断言覆盖了「任何地方不小心 `print` 到 stdout」这一整类
@@ -523,6 +550,7 @@ stdout 写入     → 加锁后单线程写入（JSON Lines 天然按行独立�
 | 日期 | 版本 | 变更 |
 |---|---|---|
 | 2026-10-27 | v1.10 | **本地优先 AI 后端**：新增可编辑段 `local_ai`（llama-server 参数）与 `vision`（画面理解开关）；汇总与画面理解的后端由 `app/core/ai_backend.py::resolve()` 统一选（**本地 llama-server → 云端 → 无**），`skip_reason` 不再因缺密钥而拦截，**没有云端密钥也能汇总**；`get_config` 增 `ai` 诊断（只探测、**不启动进程**）。新增产物 `visual.md`（拼版图 → 模型读 → 并入汇总）。判据 53 → **59** |
+| 2026-10-27 | v1.11 | **模型下载泛化为资产包下载**：`download_model` 增 `pack`（`whisper` 缺省 / `local_ai`），文件清单移入 `app/core/asset_packs.py`，传输逻辑不动；新增 zip 解压（整包解压 + zip-slip 防护 + 解压进度事件 `model_download_extracting`）与「另一个包在下回 `E_BUSY`」；`get_config` 增 `packs`，所有 `model_download_*` 事件带 `pack`。**本地视觉模型的运行包与权重改为装完后点击下载**（不进安装包）。判据 59 → **64**（下载层 8 → **11**） |
 | 2026-10-24 | v1.3 | 设置界面 + 模型下载：① 命令表新增 5 条（`get_config` / `set_config` / `download_model` / `cancel_model_download` / `verify_env`），新增 §3.2 详述白名单、保存即重启（D-S1）、三态布尔与 `blocked_reason`、下载事件流与续传；② `env_verified` 增 `gpu_verified` 与 `blocked_reason`；③ **语义更正**：`gpu_usable=false` 只表示「验过，确实不能用」，`null` 且 `blocked_reason` 非空表示「因环境缺失没能验」——2026-10-24 安装版首启的「GPU 不可用」误报正是这两者被混为一谈；④ §9 判据 19 → **28** 条 |
 | 2026-10-27 | v1.9 | 汇总阶段落地（v1.9）：新增状态 `framed`，抽帧不再直接置 `done`；`summarizing` 阶段走 OpenAI 兼容 `chat/completions`，产物 `summary.md`（一句话结论 / 章节大纲带时间戳 / 关键要点 / 适合谁看）。未配置（未启用或无密钥）时跳过并照常 `done`。判据 48 → **53** |
 | 2026-10-26 | v1.8 | 抖音打通：浏览器取流（系统 Edge + playwright）取 DASH 两路 + ffmpeg 合并，**匿名无需cookie**；新增 `douyin_login`（有头扫码，登录态存 profile）。判据 47 → **48** |

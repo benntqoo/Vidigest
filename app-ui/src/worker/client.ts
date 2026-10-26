@@ -153,9 +153,10 @@ export function setConfig(patch: Record<string, unknown>): Promise<string> {
   return sendCommand("set_config", { patch });
 }
 
-/** 下载模型（约 2.9 GiB）。进度以 `model_download_*` 事件推送。 */
-export function downloadModel(): Promise<string> {
-  return sendCommand("download_model", {});
+/** 下载一个资产包。`pack` 缺省为 `whisper`（语音模型，约 2.9 GiB）。
+ *  另一个可选值是 `local_ai`（本地视觉模型，约 2.3 GiB）。进度以 `model_download_*` 推送。 */
+export function downloadModel(pack: "whisper" | "local_ai" = "whisper"): Promise<string> {
+  return sendCommand("download_model", { pack });
 }
 
 export function cancelModelDownload(): Promise<string> {
