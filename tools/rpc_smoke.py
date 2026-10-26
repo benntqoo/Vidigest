@@ -397,6 +397,48 @@ def run_main_flow(env: dict[str, str]) -> Host:
             f"verified={'收到' if again else '未收到'}",
         )
 
+    # ---- 清空数据（设置页「维护」）----
+    work = Path(env["VIDIGEST_CONFIG"]).parent / "work"
+    probe_file = work / "probe.mp4"
+    work.mkdir(parents=True, exist_ok=True)
+    probe_file.write_bytes(b"x")
+    models_dir = ROOT / "models" / "large-v3"
+    models_before = sorted(p.name for p in models_dir.iterdir()) if models_dir.is_dir() else []
+
+    host.send("clear_data", {"scope": "workspace"}, req_id="c-clear-1")
+    cleared = host.await_event("data_cleared")
+    c1 = cleared.get("data", {}) if cleared else {}
+    models_after = sorted(p.name for p in models_dir.iterdir()) if models_dir.is_dir() else []
+    host.record(
+        "clear_data(workspace)：清内容、留目录、**不碰模型**",
+        cleared is not None
+        and int(c1.get("files_removed") or 0) >= 1
+        and not probe_file.exists()
+        and work.is_dir()
+        and models_before == models_after,
+        f"files_removed={c1.get('files_removed')} 目录还在={work.is_dir()} "
+        f"模型未变={models_before == models_after}",
+    )
+
+    host.send("clear_data", {"scope": "history"}, req_id="c-clear-2")
+    cleared2 = host.await_event("data_cleared")
+    host.send("list_tasks", req_id="c-clear-3")
+    after = host.await_event("task_list")
+    remaining = len(((after or {}).get("data") or {}).get("tasks") or [])
+    host.record(
+        "clear_data(history)：任务清空",
+        cleared2 is not None and remaining == 0,
+        f"tasks_removed={((cleared2 or {}).get('data') or {}).get('tasks_removed')} 剩余={remaining}",
+    )
+
+    host.send("clear_data", {"scope": "nonsense"}, req_id="c-clear-4")
+    bad = host.await_event("error")
+    host.record(
+        "clear_data 非法 scope → E_BAD_ARGS",
+        ((bad or {}).get("data") or {}).get("code") == "E_BAD_ARGS",
+        f"code={((bad or {}).get('data') or {}).get('code')}",
+    )
+
     # ---- 判据 8：优雅关闭 ----
     host.send("shutdown", req_id="c-8")
     bye = host.await_event("bye", timeout=10)

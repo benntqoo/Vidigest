@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import queue
+import shutil
 import sys
 import threading
 import time
@@ -249,6 +250,7 @@ class Worker:
             "download_model": self._cmd_download_model,
             "cancel_model_download": self._cmd_cancel_model_download,
             "verify_env": self._cmd_verify_env,
+            "clear_data": self._cmd_clear_data,
         }
 
     # ---- 启动 ----
@@ -793,11 +795,47 @@ class Worker:
             "model_missing_files": missing,
             "model_size_bytes": size,
             "read_only_fields": list(BASELINE_FIELDS),
+            # 工作目录是否已存在（且非空）。首启引导据此改文案：不是新建，
+            # 而是「沿用上次安装留下的目录」。卸载保留 workspace 之后这很常见。
+            "work_dir_exists": Path(cfg.paths.work_dir).is_dir(),
             "api_key_env": api_key_env,
             "api_key_present": bool(os.environ.get(api_key_env)),
             "pipeline_state": self.dispatcher.state.value,
             "download": self._downloader.status() if self._downloader else {"running": False},
         }
+
+    def _cmd_clear_data(self, args: dict[str, Any], req_id: str | None) -> None:
+        """清空**任务历史**或**工作目录内容**（`workspace`），不碰模型。
+
+        `scope`：
+        - `history`：删 `state.db` 里全部任务记录（并重置自增序号）
+        - `workspace`：清空 `work_dir` 下的**内容**（目录本身保留）
+        - `all`：两者都做
+
+        **为什么不碰 `model_dir`**：模型 2.9 GiB，重下是最贵的操作。
+        想删模型的人可以直接删目录，或者卸载（卸载也会保留它）。
+        给一个「顺手把模型删了」的按钮，只会制造事故。
+
+        有任务在跑时直接拒绝：一边跑一边删产出，症状是「转写突然报文件不存在」，
+        而且看起来像 bug。
+        """
+        scope = str(args.get("scope") or "").strip()
+        if scope not in ("history", "workspace", "all"):
+            self.proto.error("E_BAD_ARGS", "scope 必须是 history / workspace / all", req_id=req_id)
+            return
+        if self.dispatcher.state.value != "idle":
+            self.proto.error("E_BUSY", "有任务在跑，等它结束再清空", req_id=req_id)
+            return
+
+        result: dict[str, Any] = {"scope": scope}
+        if scope in ("history", "all"):
+            result["tasks_removed"] = self.store.clear_all()
+        if scope in ("workspace", "all"):
+            result["files_removed"], result["errors"] = _empty_directory(
+                Path(self.cfg.paths.work_dir)
+            )
+        logging.info("清空数据：%s", result)
+        self.proto.emit("data_cleared", result, req_id)
 
     # ---- 流水线控制 ----
 
@@ -933,6 +971,32 @@ def _probe_dir_writable(path: Path) -> str | None:
     首启挑默认目录也要用它（安装目录可能只读），所以不能只留在 RPC 这一层。
     """
     return paths.probe_dir_writable(path)
+
+
+def _empty_directory(path: Path) -> tuple[int, list[str]]:
+    """清空目录**内容**，保留目录本身。返回 `(删掉的文件数, 错误列表)`。
+
+    为什么保留目录：`work_dir` 是用户配的路径，删掉它等于改配置语义；
+    而且下次启动又要重建，多一次无谓的失败面。
+
+    为什么要返回错误列表而不是抛：删不掉的文件（被占用）不该让整次操作失败 ——
+    如实报几条、让用户知道还剩什么，比半路抛异常、界面只显示「失败」有用。
+    """
+    removed = 0
+    errors: list[str] = []
+    if not path.is_dir():
+        return 0, []
+    for child in path.iterdir():
+        try:
+            if child.is_dir() and not child.is_symlink():
+                removed += sum(1 for f in child.rglob("*") if f.is_file())
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+                removed += 1
+        except OSError as exc:
+            errors.append(f"{child.name}: {type(exc).__name__}: {exc}")
+    return removed, errors
 
 
 def _maybe_enable_faulthandler() -> None:

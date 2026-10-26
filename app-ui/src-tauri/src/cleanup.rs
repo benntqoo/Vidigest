@@ -19,20 +19,23 @@
 //!
 //! ## 为什么不顺手多删几个地方
 //!
-//! 删四处：
+//! **删什么、留什么**（2026-10-26 定，改动过两次，以这里为准）：
 //!
-//! | 目标 | 内容 |
-//! |---|---|
-//! | `<LocalAppData>\Vidigest` | state.db / config.yaml |
-//! | `<LocalAppData>\com.benntqoo.vidigest` | WebView2 user data（实测卸载后留 ~70 MB） |
-//! | `<安装目录>\workspace` | 产出（mp4 / wav / jpg），**只在它确实在安装目录下时** |
-//! | `<安装目录>\models` | 模型（2.9 GiB），同上 |
+//! | 目标 | 处置 | 理由 |
+//! |---|---|---|
+//! | `<LocalAppData>\Vidigest`（config.yaml / state.db） | **删** | 状态。重装要的是干净配置 + 空任务库 |
+//! | `<LocalAppData>\com.benntqoo.vidigest`（WebView2 user data） | **删** | 缓存，实测卸载后留 ~70 MB |
+//! | `<安装目录>\workspace`（产出：mp4 / wav / jpg） | **留** | 用户数据，几十 GB |
+//! | `<安装目录>\models`（模型 2.9 GiB） | **留** | 重新下载纯属浪费时间 |
 //!
-//! 后两个是 2026-10-26 加的：默认目录改成「安装目录下」之后，卸载不删它们就会在
-//! 安装目录里留几十 GB。代价是**模型也没了**，重装要重新复制或下载 —— 这是
-//! 「一个地方放全部」的必然结果，已记录在 docs/打包与分发.md §6.3。
+//! 为什么不是「卸载时让用户勾选保留」：那需要在 MSI 的 `MaintenanceWelcomeDlg`
+//! 序列里插自定义对话框（自定义 WiX `Dialog` + `Publish` + UI 扩展），
+//! 而 MSI 的装/卸**本机验不了**（要提权 + GUI）。一旦某处写错，后果是数据被
+//! **静默删掉**，而且没人会发现 —— 这正是上一版 `RemoveFolderEx` 栽的坑。
+//! 「默认保留」既省掉一次点击，又能用 `VIDIGEST_CLEANUP_EXE_DIR` 在本机实测。
 //!
-//! 不碰用户**改到别处**的目录：我们只删这两个固定名字的子目录，且只删安装目录下的。
+//! 确实想连数据一起清干净时，用**应用内的清空入口**（可见、可确认、可测），
+//! 而不是把风险压在卸载器上。
 
 use std::path::PathBuf;
 
@@ -49,20 +52,6 @@ const BUNDLE_IDENTIFIER: &str = "com.benntqoo.vidigest";
 /// 命令行里有没有卸载清理开关。
 pub fn is_cleanup_invocation(args: impl IntoIterator<Item = String>) -> bool {
     args.into_iter().any(|a| a == CLEANUP_FLAG)
-}
-
-/// 安装目录（`vidigest.exe` 所在的那一层）。
-///
-/// 卸载的自定义动作用的是**主程序**（`FileKey="Path"`），所以 `current_exe()`
-/// 的父目录就是安装目录 —— 不是 worker 所在的 `worker/` 子目录。
-///
-/// `VIDIGEST_CLEANUP_EXE_DIR` 只用于测试：把安装目录换成一个临时目录，
-/// 好在不碰真实安装的情况下验证「workspace / models 会被删」。
-fn install_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("VIDIGEST_CLEANUP_EXE_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-    std::env::current_exe().ok()?.parent().map(PathBuf::from)
 }
 
 /// `<LocalAppData>` 根目录。
@@ -87,16 +76,10 @@ pub fn run_cleanup() -> i32 {
         return 0;
     };
 
-    let mut targets: Vec<PathBuf> = [APP_DIR_NAME, BUNDLE_IDENTIFIER]
+    let targets: Vec<PathBuf> = [APP_DIR_NAME, BUNDLE_IDENTIFIER]
         .iter()
         .map(|name| root.join(name))
         .collect();
-    if let Some(inst) = install_dir() {
-        // 只删这两个**固定名字**的子目录。安装目录本身不碰。
-        targets.push(inst.join("workspace"));
-        targets.push(inst.join("models"));
-    }
-
     for target in targets {
         if !target.exists() {
             // 正常情况：没装过 / 已经删过。不算错误。

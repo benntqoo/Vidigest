@@ -196,6 +196,15 @@ function App() {
           pushLog("info", "配置已保存，正在重启 worker 以生效");
           break;
         }
+        case "data_cleared": {
+          // 清空之后必须重拉任务列表，否则界面还显示已删的行。
+          pushLog(
+            "info",
+            `已清空：任务 ${ev.data.tasks_removed ?? 0} 条 / 文件 ${ev.data.files_removed ?? 0} 个`,
+          );
+          refreshTasks();
+          break;
+        }
         case "model_download_started": {
           setDownload({
             phase: "running",
@@ -492,6 +501,7 @@ function App() {
             suggestedWork={configInfo.config.paths.work_dir}
             suggestedModel={configInfo.config.paths.model_dir}
             modelPresent={!!configInfo.model_present}
+            workReused={!!configInfo.work_dir_exists}
             busy={applyingSince !== null}
             onConfirm={(work, model) => {
               // 不在这里关掉引导：保存可能失败（目录不可写 / 非法路径），
@@ -537,6 +547,7 @@ function App() {
             setVerifying(true);
             run("重新校验 GPU", api.verifyEnv());
           }}
+          onClearData={(scope) => run("清空数据", api.clearData(scope))}
         />
       )}
 

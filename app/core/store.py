@@ -136,6 +136,21 @@ class Store:
             self._conn.commit()
             return cur.rowcount > 0
 
+    def clear_all(self) -> int:
+        """删掉**全部**任务记录，返回删掉的条数。
+
+        用途：设置里的「清空任务历史」。语义是「让列表回到空」——
+        产出文件不归它管（那是 `workspace/` 的事），两者的清空入口是分开的。
+        """
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM tasks")
+            self._conn.commit()
+            # AUTOINCREMENT 的序号也归零：否则清空后下一个任务从 id=7 开始，
+            # 用户会以为「没清干净」。
+            self._conn.execute("DELETE FROM sqlite_sequence WHERE name = 'tasks'")
+            self._conn.commit()
+            return cur.rowcount
+
     def reset_interrupted(self) -> list[Task]:
         """把中途态重置为上一稳定态。**进程启动时必须先调用一次**。
 

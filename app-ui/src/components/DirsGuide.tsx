@@ -18,6 +18,8 @@ interface Props {
   suggestedModel: string;
   /** 默认位置里是否已经找到完整模型（5 个文件齐全） */
   modelPresent: boolean;
+  /** 工作目录是否已存在（= 上次安装留下的，卸载不删 workspace） */
+  workReused: boolean;
   /** 保存中：worker 正在重启 */
   busy: boolean;
   onConfirm: (work: string, model: string) => void;
@@ -28,6 +30,7 @@ export function DirsGuide({
   suggestedWork,
   suggestedModel,
   modelPresent,
+  workReused,
   busy,
   onConfirm,
   onLater,
@@ -46,6 +49,16 @@ export function DirsGuide({
           默认都放在安装目录下，方便一处管理。也可以改到别的磁盘 ——
           如果你把程序装在受保护的位置（例如 Program Files），下面显示的会自动换到可写的地方。
         </p>
+
+        {(workReused || modelPresent) && (
+          <p className="banner banner-info">
+            检测到上次安装留下的数据，已直接沿用：
+            {workReused ? "工作目录" : ""}
+            {workReused && modelPresent ? " + " : ""}
+            {modelPresent ? "模型" : ""}
+            。卸载只清配置与任务历史，产出和模型都会保留。
+          </p>
+        )}
 
         <label className="field">
           <span className="field-label">

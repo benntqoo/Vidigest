@@ -163,6 +163,11 @@ export function cancelModelDownload(): Promise<string> {
 }
 
 /** 手动重跑一次 GPU 真实验证（响应 `env_verify_started` → `env_verified`）。 */
+/** 清空任务历史 / 工作目录内容（**不碰模型**）。 */
+export function clearData(scope: "history" | "workspace" | "all"): Promise<string> {
+  return sendCommand("clear_data", { scope });
+}
+
 export function verifyEnv(): Promise<string> {
   return sendCommand("verify_env");
 }

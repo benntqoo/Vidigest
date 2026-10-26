@@ -233,6 +233,8 @@ export interface ConfigInfo {
   model_size_bytes: number;
   /** `transcribe.beam_size` 等「改了会让 662 段基线失效」的字段 */
   read_only_fields: string[];
+  /** 工作目录是否已存在（首启引导据此说「沿用上次的目录」而不是「新建」） */
+  work_dir_exists: boolean;
   api_key_env: string;
   api_key_present: boolean;
   pipeline_state: PipelineState;

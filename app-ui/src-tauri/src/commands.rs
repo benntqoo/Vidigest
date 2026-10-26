@@ -34,6 +34,7 @@ const ALLOWED_COMMANDS: &[&str] = &[
     "download_model",
     "cancel_model_download",
     "verify_env",
+    "clear_data",
 ];
 
 /// 查当前连接状态。前端首次挂载时拉一次，避免错过启动期事件（规格 §4.2 的同一思路）。

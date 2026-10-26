@@ -37,6 +37,7 @@ interface Props {
   onDownload: () => void;
   onCancelDownload: () => void;
   onVerify: () => void;
+  onClearData: (scope: "history" | "workspace" | "all") => void;
 }
 
 const DEVICES = ["auto", "cuda", "cpu"];
@@ -80,6 +81,7 @@ export function SettingsDialog({
   onDownload,
   onCancelDownload,
   onVerify,
+  onClearData,
 }: Props) {
   const [draft, setDraft] = useState<AppConfig | null>(null);
   const [baselineUnlocked, setBaselineUnlocked] = useState(false);
@@ -584,6 +586,43 @@ export function SettingsDialog({
             保存会用 <code>yaml.safe_dump</code> 重写整个文件 ——
             <strong>手写的注释不会保留</strong>。这是现状，不是本次改动引入的。
           </p>
+
+          <section className="settings-section">
+            <h3>维护</h3>
+            <p className="settings-hint">
+              这两个操作都不会删模型（模型重下最贵）。卸载也只清配置与任务历史，
+              workspace 与 models 都会保留，重装后直接沿用。
+            </p>
+            <div className="field-row">
+              <button
+                type="button"
+                disabled={readOnly}
+                onClick={() => {
+                  if (window.confirm("清空全部任务历史？产出文件不会被删。")) {
+                    onClearData("history");
+                  }
+                }}
+              >
+                清空任务历史
+              </button>
+              <button
+                type="button"
+                className="danger"
+                disabled={readOnly}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      "清空工作目录里的全部文件？\n\n产出（视频 / 音频 / 截图 / 转写稿）会被删除，模型不受影响。",
+                    )
+                  ) {
+                    onClearData("workspace");
+                  }
+                }}
+              >
+                清空工作目录
+              </button>
+            </div>
+          </section>
         </div>
 
         <div className="modal-actions">
