@@ -39,6 +39,9 @@ interface Props {
   onCancelDownload: () => void;
   onVerify: () => void;
   onClearData: (scope: "history" | "workspace" | "all") => void;
+  /** 抖音登录状态文案（由 `douyin_login_state` 事件驱动） */
+  douyinLoginState?: { state: string; message: string } | null;
+  onDouyinLogin: () => void;
 }
 
 const DEVICES = ["auto", "cuda", "cpu"];
@@ -83,6 +86,8 @@ export function SettingsDialog({
   onCancelDownload,
   onVerify,
   onClearData,
+  douyinLoginState,
+  onDouyinLogin,
 }: Props) {
   const [draft, setDraft] = useState<AppConfig | null>(null);
   const [baselineUnlocked, setBaselineUnlocked] = useState(false);
@@ -617,6 +622,20 @@ export function SettingsDialog({
             <p className="settings-hint">
               这两个操作都不会删模型（模型重下最贵）。卸载也只清配置与任务历史，
               workspace 与 models 都会保留，重装后直接沿用。
+            </p>
+            <div className="field-row">
+              <button type="button" onClick={onDouyinLogin}>
+                抖音登录
+              </button>
+              {douyinLoginState && (
+                <span className="field-hint">{douyinLoginState.message}</span>
+              )}
+            </div>
+            <p className="settings-hint">
+              抖音单个视频<strong>不需要登录</strong>也能下（用系统自带的 Edge 打开页面取流）。
+              但「列作者全部作品」只给首屏，登录后能拿到更多 —— 登录态存在本机，
+              只需一次。注意：这是应用自己的浏览器窗口，与你平时用的 Edge/Chrome
+              <strong>不共享登录态</strong>。
             </p>
             <div className="field-row">
               <button

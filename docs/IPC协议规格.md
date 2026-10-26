@@ -82,7 +82,8 @@ logging.basicConfig(stream=sys.stderr, ...)
 | `retry_task` | `{"task_id": 7}` | `task_update` | 重置失败项到上一稳定态并重新入队 |
 | `list_tasks` | `{}` | `task_list` | 拉取全量任务快照（Rust 启动时同步一次） |
 | `get_concurrency` | `{}` | `concurrency` | 查询当前实际并发数（用于状态栏展示） |
-| `get_config` | `{}` | `author_page` | `{"platform","title","total","truncated","url","items":[{"url","title","duration","item_id","thumb"}]}` | 作者作品列表。`url` 可直接交给 `add_tasks`；`truncated=true` 表示还有更多 |
+| `get_config` | `{}` | `douyin_login_state` | `{"state","message"}` | 抖音登录进度。`waiting` 表示窗口已开、等扫码 |
+| `author_page` | `{"platform","title","total","truncated","url","items":[{"url","title","duration","item_id","thumb"}]}` | 作者作品列表。`url` 可直接交给 `add_tasks`；`truncated=true` 表示还有更多 |
 | `data_cleared` | `{"scope","tasks_removed","files_removed","errors"}` | 清空完成。`files_removed` 是文件数；`errors` 是删不掉的条目（被占用） |
 | `config` | 全量配置 + 元信息（模型路径 / 是否齐全 / 大小 / 只读字段 / 密钥是否就位 / **转写语言选项**）。**v1.2 新增** |
 | `set_config` | `{"patch": {<section>: {<key>: <value>}}}` | `config_saved` | 部分更新配置。**写盘后必须重启 worker 才生效**（§3.2）。**v1.2 新增** |
@@ -90,7 +91,9 @@ logging.basicConfig(stream=sys.stderr, ...)
 | `cancel_model_download` | `{}` | `model_download_cancelled` | 取消下载，线程在下一个 chunk 边界退出并删 `.part`。**v1.2 新增** |
 | `verify_env` | `{}` | `env_verify_started` → `env_verified` | 手动重跑一次 GPU 真实验证（设置页「重新校验」）。**v1.2 新增** |
 | `clear_data` | `{"scope":history / workspace / all}` | `data_cleared` | 清空任务历史 / 工作目录内容。**不碰 `model_dir`**。有任务在跑回 `E_BUSY`。**v1.5 新增** |
-| `list_author` | `{"url","limit"?,"platform"?}` | `author_page` | 列作者/频道/合集的作品（批量下载入口）。跑在工作线程。不支持 → `E_AUTHOR_UNSUPPORTED`；失败 → `E_AUTHOR_FAILED`。**v1.7 新增** |
+| `douyin_login` | `{"timeout"?}` | `douyin_login_state` | 弹**有头** Edge 让用户扫码登录抖音，登录态存 profile。事件 `state` = `waiting`/`done`/`timeout`/`error`。**v1.8 新增** |
+| `list_author` | `{"url","limit"?,"platform"?}` | `douyin_login_state` | `{"state","message"}` | 抖音登录进度。`waiting` 表示窗口已开、等扫码 |
+| `author_page` | 列作者/频道/合集的作品（批量下载入口）。跑在工作线程。不支持 → `E_AUTHOR_UNSUPPORTED`；失败 → `E_AUTHOR_FAILED`。**v1.7 新增** |
 | `shutdown` | `{}` | `bye` | 优雅退出：停止取新任务 → 等待在跑的完成（最长 30s）→ 退出 |
 
 **未知命令**：回 `error`，`code = "E_UNKNOWN_CMD"`，**不退出进程**。
@@ -250,8 +253,10 @@ download_model
 | `ready` | `{"server_version", "protocol", "gpu_usable", "gpu_verified", "concurrency": {"n_asr","n_dl","n_frame","n_sum"}, "pipeline_state", "db_path", "config_is_default"}` | 握手完成。**快速返回，不阻塞**（GPU 真实验证是异步的，见 §4.2） |
 | `env_verified` | `{"gpu_usable", "gpu_verified", "detail", "blocked_reason", "concurrency"}` | GPU **真实推理验证**结果。异步推送，见 §4.2。`gpu_usable` 是三态，`blocked_reason` 说明「为什么没验成」，见 §3.2.3 |
 | `data_cleared` | `{"scope","tasks_removed","files_removed","errors"}` | 清空完成。`files_removed` 是文件数；`errors` 是删不掉的条目（被占用） |
+| `douyin_login_state` | `{"state","message"}` | 抖音登录进度。`waiting` 表示窗口已开、等扫码 |
 | `author_page` | `{"platform","title","total","truncated","url","items":[{"url","title","duration","item_id","thumb"}]}` | 作者作品列表。`url` 可直接交给 `add_tasks`；`truncated=true` 表示还有更多 |
 | `pong` | `{}` | 心跳响应 |
+| `douyin_login_state` | `{"state","message"}` | 抖音登录进度。`waiting` 表示窗口已开、等扫码 |
 | `author_page` | `{"platform","title","total","truncated","url","items":[{"url","title","duration","item_id","thumb"}]}` | 作者作品列表。`url` 可直接交给 `add_tasks`；`truncated=true` 表示还有更多 |
 | `data_cleared` | `{"scope","tasks_removed","files_removed","errors"}` | 清空完成。`files_removed` 是文件数；`errors` 是删不掉的条目（被占用） |
 | `config` | `{"path","is_default","config","languages","work_dir_exists","model_path","model_present","model_missing_files","model_size_bytes","read_only_fields","api_key_env","api_key_present","pipeline_state","download"}` | `get_config` 的响应，见 §3.2。`languages` 是 `[{code,label}]`，首项 `code=""` = 自动检测；**选项由后端下发，前端不另存一份**（两份表必然漂移） |
@@ -513,10 +518,11 @@ stdout 写入     → 加锁后单线程写入（JSON Lines 天然按行独立�
 | 日期 | 版本 | 变更 |
 |---|---|---|
 | 2026-10-24 | v1.3 | 设置界面 + 模型下载：① 命令表新增 5 条（`get_config` / `set_config` / `download_model` / `cancel_model_download` / `verify_env`），新增 §3.2 详述白名单、保存即重启（D-S1）、三态布尔与 `blocked_reason`、下载事件流与续传；② `env_verified` 增 `gpu_verified` 与 `blocked_reason`；③ **语义更正**：`gpu_usable=false` 只表示「验过，确实不能用」，`null` 且 `blocked_reason` 非空表示「因环境缺失没能验」——2026-10-24 安装版首启的「GPU 不可用」误报正是这两者被混为一谈；④ §9 判据 19 → **28** 条 |
+| 2026-10-26 | v1.8 | 抖音打通：浏览器取流（系统 Edge + playwright）取 DASH 两路 + ffmpeg 合并，**匿名无需cookie**；新增 `douyin_login`（有头扫码，登录态存 profile）。判据 47 → **48** |
 | 2026-10-26 | v1.7 | 新增 `list_author` + `author_page`（批量下载入口，作者作品列表）；平台识别加 twitter/x。平台层落在 `app/platforms/`，见 `docs/架构_多平台与批量下载.md`。判据 43 → **47** |
 | 2026-10-26 | v1.6 | 版本号收成单真源：新增 `VERSION` 文件 + `tools/bump_version.py`（一条命令改 5 处），`./dev.sh bump <x.y.z>`；`ready.server_version` 必须等于 `VERSION`。产品版本 0.1.0 → **0.2.0**（与 worker 上报值对齐）。判据 41 → **43** |
 | 2026-10-26 | v1.5 | 新增 `clear_data`（清空任务历史 / 工作目录内容，**不碰模型**）+ `data_cleared` 事件；`get_config` 增 `work_dir_exists`（首启引导区分「新建」与「沿用上次」）。目录策略同日改成「默认放安装目录」，判据 37 → **40** |
-| 2026-10-25 | v1.4 | `get_config` 增 `languages`（转写语言下拉的选项由后端下发，`config.py::LANGUAGE_LABELS` 为唯一真源）；`transcribe.language` **空串 = 自动检测**（faster-whisper 只认 `None`，归一化在 `transcriber.transcribe()` 一处）；`paths` 新增 `work_dir_confirmed`（首启引导的显式确认位）。§9 判据 28 → **47** 条 |
+| 2026-10-25 | v1.4 | `get_config` 增 `languages`（转写语言下拉的选项由后端下发，`config.py::LANGUAGE_LABELS` 为唯一真源）；`transcribe.language` **空串 = 自动检测**（faster-whisper 只认 `None`，归一化在 `transcriber.transcribe()` 一处）；`paths` 新增 `work_dir_confirmed`（首启引导的显式确认位）。§9 判据 28 → **48** 条 |
 | 2026-10-02 | v1 | 首版。确立 stdio + JSON Lines、命令/事件清单、状态语义、心跳、进程回收与验收判据 |
 | 2026-10-06 | v1.2 | 语义更正（卡死缺陷修复的配套）：① `pipeline_state` 按 §4 本义「状态跃迁」补齐**终态推送**（→idle 于批次收敛、→aborted 于整批中止），此前实现只在 start/pause/resume 时推送，UI 开始按钮会永久灰死；② 空队列 `start` 落 idle 而非 running（与 `resume()` 的条件式语义对齐）；③ 中止后单次 `start` 可恢复（`_cmd_start` 改为先 start 后 submit，`_put` 感知 ABORTED，队列条目倒回 pending）。§9 判据 11/12/13 同步更正 |
 | 2026-10-03 | v1.1 | ① 新增 `cancelled` 状态与 §3.1 取消语义（协作式取消、检查点位置、两条硬要求）；② 事件清单补齐调度器事件：`pipeline_state` / `resource_warning` / `batch_aborted` / `batch_done`，`task_update` 之外的控制面事件改名映射（`dispatcher` 只报事实，名字翻译在 `rpc.py` 的 `EVENT_NAMES`）；③ `ready` 增 `pipeline_state`；④ §4.1 补限流落地常量与「限流在调度器做，不在 rpc 做」的理由；⑤ §9 判据从 8 条扩到 19 条（含新修好的 EOF 判据），并标注两条**尚未覆盖**的项（转写进行中的心跳、控制面事件在真实批次下的时序）；⑥ `E_NOT_IMPLEMENTED` 已无命令返回 |

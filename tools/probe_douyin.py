@@ -43,11 +43,26 @@ MEDIA_HINTS = (".mp4", ".m3u8", ".flv")
 WANT_HOSTS = ("douyin", "bytecdn", "bytedance", "snssdk", "ixigua", "amemv", "pstatp")
 
 
-def _looks_media(url: str) -> bool:
+def _looks_media(url: str, content_type: str = "") -> bool:
+    """判断一个响应是不是"视频/音频本体"。
+
+    ⚠️ 2026-10-26 踩过：抖音的播放走 **DASH/MSE**，媒体请求是**分段（206）**，
+    而且 URL 里往往只有 `/video/tos/cn/tos-cn-ve-...` 这种形态，**不含 `.mp4`**。
+    第一版过滤器要求 `status==200` 且 URL 含 `.mp4/.m3u8` ⇒ 一条都拦不到，
+    于是把「匿名能播」误判成「抓不到直链」。
+    现在改成：接受 200/206，按 **content-type** 优先判断，URL 关键词只作辅助。
+    """
+    ct = (content_type or "").lower()
+    if ct.startswith("video/") or ct.startswith("audio/"):
+        return True
     low = url.lower()
+    if "mime_type=video" in low or "mime_type=audio" in low:
+        return True
+    if "/video/tos/" in low or "/audio/tos/" in low:
+        return True
     if not any(host in low for host in WANT_HOSTS):
         return False
-    return any(hint in low for hint in MEDIA_HINTS) or "/video/tos/" in low or "mime_type=video" in low
+    return any(hint in low for hint in MEDIA_HINTS)
 
 
 def main() -> int:
@@ -95,7 +110,15 @@ def main() -> int:
                 print(f"注入 cookie {len(jar)} 条")
 
         page = ctx.new_page()
-        page.on("response", lambda r: hits.append(r.url) if _looks_media(r.url) and r.status == 200 else None)
+        def _on_response(r):
+            try:
+                ct = r.headers.get("content-type", "")
+            except Exception:  # noqa: BLE001
+                ct = ""
+            if r.status in (200, 206) and _looks_media(r.url, ct):
+                hits.append(r.url)
+
+        page.on("response", _on_response)
 
         if args.warm:
             # 先暖会话：抖音的 ttwid / __ac_signature 由首页 JS 计算并种下，

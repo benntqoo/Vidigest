@@ -8,6 +8,7 @@ state.db
 state.db-journal
 work/
 workspace/
+browser-profile/
 output/
 logs/
 *.log

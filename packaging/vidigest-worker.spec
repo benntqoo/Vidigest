@@ -54,7 +54,6 @@ EXCLUDES = [
     "setuptools",
     "pip",
     "wheel",
-    "playwright",
 ]
 
 binaries = []
@@ -69,7 +68,11 @@ hiddenimports = []
 #   av            → PyAV 自带的 ffmpeg 动态库（**不是**系统那个 ffmpeg.exe）
 #   onnxruntime   → silero VAD 的执行后端（dll + 内置模型元数据）
 #   tokenizers    → 原生 .pyd
-for pkg in ("ctranslate2", "faster_whisper", "av", "onnxruntime", "tokenizers"):
+#   playwright     → **必须 collect_all**：它不是纯 python 包，`driver/` 下有
+#                    node.exe 和一堆 js（playwright 用 node 驱动浏览器）。
+#                    只靠 import 分析会漏掉 driver，产物里 `playwright install`
+#                    之外的一切都会失败，报错还只是一句 "Executable doesn't exist"。
+for pkg in ("ctranslate2", "faster_whisper", "av", "onnxruntime", "tokenizers", "playwright"):
     b, d, h = collect_all(pkg)
     binaries += b
     datas += d

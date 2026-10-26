@@ -63,6 +63,7 @@ DEPS: list[tuple[str, str, str | None]] = [
     ("PIL", "Pillow", None),
     ("yaml", "PyYAML", None),
     ("PyInstaller", "pyinstaller", None),
+    ("playwright", "playwright", None),
 ]
 
 #: nvidia 子包 → 每个至少要有 1 个 DLL，否则 GPU 一定不可用。

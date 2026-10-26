@@ -50,7 +50,7 @@ from app.models.config import (
 from app.models.task import Task, TaskStatus
 
 PROTOCOL_VERSION = 1
-SERVER_VERSION = "0.3.0"
+SERVER_VERSION = "0.4.0"
 
 #: 内部事件名 → 协议事件名。
 #: 调度器不感知协议，它只报「发生了什么」；名字翻译在这里做，与 `STAGE_LABELS` 同理。
@@ -253,6 +253,7 @@ class Worker:
             "verify_env": self._cmd_verify_env,
             "clear_data": self._cmd_clear_data,
             "list_author": self._cmd_list_author,
+            "douyin_login": self._cmd_douyin_login,
         }
 
     # ---- 启动 ----
@@ -891,6 +892,37 @@ class Worker:
             )
 
         threading.Thread(target=work, name="list-author", daemon=True).start()
+
+    def _cmd_douyin_login(self, args: dict[str, Any], req_id: str | None) -> None:
+        """弹一个**有头** Edge 让用户扫码登录抖音，登录态存进 profile 目录。
+
+        为什么必须有这一步：playwright 起的是独立 profile，看不到用户自己浏览器
+        里的登录态（Chrome 127+ 的 App-Bound Encryption 也让读 cookie 库不可行）。
+        所以"网页端已登录"帮不上忙 —— 必须在**我们的窗口里**登录一次。
+
+        为什么要登录：单个视频匿名也能下；登录主要影响**作者作品列表能翻多少页**
+        （实测匿名只给首屏约 14 条）。
+        """
+        try:
+            timeout = float(args.get("timeout") or 180)
+        except (TypeError, ValueError):
+            timeout = 180.0
+
+        profile = paths.app_data_dir() / "browser-profile"
+
+        def emit(state: str, message: str) -> None:
+            self.proto.emit(
+                "douyin_login_state", {"state": state, "message": message}, req_id
+            )
+
+        def work() -> None:
+            emit("waiting", "已打开浏览器窗口，请在窗口里扫码登录抖音")
+            ok = platforms.login_douyin(profile, timeout, emit)
+            if not ok:
+                logging.info("抖音登录未完成")
+
+        emit("waiting", "正在启动浏览器…")
+        threading.Thread(target=work, name="douyin-login", daemon=True).start()
 
     # ---- 流水线控制 ----
 

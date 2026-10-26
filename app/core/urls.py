@@ -28,6 +28,9 @@ URL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
             "douyin",
             r"https?://(?:v\.douyin\.com/[A-Za-z0-9_\-]+"
             r"|(?:www\.)?douyin\.com/video/\d+"
+            # 作者主页（批量下载的入口）。2026-10-26 漏了这一条：作者 URL 落到
+            # unknown ⇒ 被丢给 yt-dlp ⇒ 超时 120 秒，而浏览器取流那条路根本没被调用。
+            r"|(?:www\.)?douyin\.com/user/[A-Za-z0-9_\-]+"
             r"|(?:www\.)?iesdouyin\.com/share/video/\d+)",
         ),
         (

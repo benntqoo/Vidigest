@@ -69,6 +69,8 @@ function App() {
   const [verifying, setVerifying] = useState(false);
   /** 首启工作目录引导是否已被「稍后再说」收起（只在本进程内有效，重启再问） */
   const [guideDismissed, setGuideDismissed] = useState(false);
+  /** 抖音登录状态（有头窗口里扫码的进度），null = 还没点过 */
+  const [douyinLogin, setDouyinLogin] = useState<{ state: string; message: string } | null>(null);
 
   const pushLog = useCallback(
     (level: LogEntry["level"], msg: string, source?: string) => {
@@ -194,6 +196,13 @@ function App() {
           setSaveWarnings(Array.isArray(ev.data.warnings) ? (ev.data.warnings as string[]) : []);
           setApplyingSince(Date.now());
           pushLog("info", "配置已保存，正在重启 worker 以生效");
+          break;
+        }
+        case "douyin_login_state": {
+          const st = String(ev.data.state ?? "");
+          const msg = String(ev.data.message ?? "");
+          setDouyinLogin({ state: st, message: msg });
+          pushLog(st === "done" ? "info" : st === "error" ? "error" : "info", `抖音登录：${msg}`);
           break;
         }
         case "data_cleared": {
@@ -558,6 +567,11 @@ function App() {
             run("重新校验 GPU", api.verifyEnv());
           }}
           onClearData={(scope) => run("清空数据", api.clearData(scope))}
+          douyinLoginState={douyinLogin}
+          onDouyinLogin={() => {
+            setDouyinLogin({ state: "waiting", message: "正在启动浏览器…" });
+            run("抖音登录", api.douyinLogin());
+          }}
         />
       )}
 

@@ -769,34 +769,55 @@ def check_platform_registry(judgements: list[tuple[str, bool, str]]) -> None:
         ("https://twitter.com/foo/status/123456", "twitter"),
         ("https://v.douyin.com/ye_7rRWF3tc/", "douyin"),
         ("https://www.douyin.com/video/7123456789012345678", "douyin"),
+        # 作者主页：批量下载的入口。2026-10-26 漏过这条 —— 落到 unknown 就会
+        # 被丢给 yt-dlp（超时 120 秒），而浏览器取流那条路根本没被调用。
+        ("https://www.douyin.com/user/MS4wLjABAAAAxxx", "douyin"),
         ("C:/tmp/clip.mp4", "local"),
         ("https://example.com/some/video", "unknown"),  # 交给 yt-dlp 通用兜底
     ]
     bad = [(u, resolve(u).name, want) for u, want in cases if resolve(u).name != want]
     judgements.append(
         (
-            "平台注册表 resolve() 10 个形态",
+            "平台注册表 resolve() 11 个形态",
             not bad,
-            f"不符={bad}" if bad else "10 个全对",
+            f"不符={bad}" if bad else "11 个全对",
         )
     )
 
-    # 能力位：抖音与本地都没有「作者作品」。UI 靠它决定要不要显示批量入口，
-    # 报错了会让用户点了才失败。
+    # 能力位：本地没有「作者作品」；抖音**有**（浏览器取流那条路，2026-10-26 打通，
+    # 但只保证首屏条数）。UI 靠它决定要不要显示批量入口。
     from app.platforms import supports_author
 
     ok = (
-        supports_author("https://v.douyin.com/x/") is False
+        supports_author("https://v.douyin.com/x/") is True
         and supports_author("C:/tmp/a.mp4") is False
         and supports_author("https://www.bilibili.com/video/BV1") is True
     )
     judgements.append(
         (
-            "能力位：抖音/本地无作者列表，B 站有",
+            "能力位：本地无作者列表，抖音/B 站有",
             ok,
             f"douyin={supports_author('https://v.douyin.com/x/')} "
             f"local={supports_author('C:/tmp/a.mp4')} "
             f"bilibili={supports_author('https://www.bilibili.com/video/BV1')}",
+        )
+    )
+
+    # DASH 流挑选：一次播放会发几十个 206 分段请求（URL 常完全相同），
+    # 必须去重后各取一条。挑错的表现是「下了一个 0 秒的视频」。
+    from app.platforms.douyin_browser import classify
+
+    v, a = classify([
+        "https://v26-web.douyinvod.com/x/video/tos/cn/o1/media-video-avc1/?a=1",
+        "https://v26-web.douyinvod.com/x/video/tos/cn/o1/media-video-avc1/?a=1",  # 重复
+        "https://v26-web.douyinvod.com/x/video/tos/cn/o2/media-audio-und-mp4a/?a=2",
+        "https://lf-douyin-pc-web.douyinstatic.com/obj/uuu_265.mp4",  # 装饰动画，不该被选中
+    ])
+    judgements.append(
+        (
+            "抖音 DASH 流挑选（去重 / 区分音视频 / 忽略装饰 mp4）",
+            "media-video" in v and "media-audio" in a and "douyinstatic" not in v,
+            f"video={v.split('/')[-1][:24] or '空'} audio={a.split('/')[-1][:24] or '空'}",
         )
     )
 
