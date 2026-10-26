@@ -172,8 +172,11 @@ def find_existing_model_dir(
 
     候选顺序（先找已有的，再谈默认）：
     1. `%LOCALAPPDATA%\\Vidigest\\models`（老默认位置，用户可能一直没挪过）
-    2. `<安装目录>\\models`（2026-10-26 起的新默认位置）
-    3. 各非系统盘上的 `<盘>:\\Vidigest\\models`
+    2. `<安装目录>\\models`（当前的默认位置）
+
+    **刻意不扫各个非系统盘**（2026-10-26 用户要求）：`<盘>:\\Vidigest\\models` 是上一版
+    的临时布局，继续认它会让「我明明把模型放安装目录了，它却用了 D 盘那份」成为可能。
+    候选越少越可预期 —— 要找的模型只有两个位置，用户也知道该放哪。
 
     判据是 `env_probe.MODEL_FILES` **5 个文件全在** —— 下了一半的目录不算，
     否则会把一个缺 `model.bin` 的目录当成可用，症状是「装完就说 GPU 不可用」。
@@ -186,7 +189,6 @@ def find_existing_model_dir(
         inst = install_dir()
         if inst is not None:
             bases.append(inst)
-        bases.extend(drive / APP_DIR_NAME for drive in _non_system_drives())
     else:
         bases = list(roots)
     for base in bases:

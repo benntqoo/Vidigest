@@ -702,6 +702,46 @@ def check_model_dir_detect(tmp: str, judgements: list[tuple[str, bool, str]]) ->
         )
     )
 
+    # 只认「数据目录」与「安装目录」两处：非系统盘上的 <盘>:\Vidigest\models **不再被识别**。
+    # 这条锁的是 2026-10-26 的决定 —— 上一版会去扫各个非系统盘，导致「模型明明放
+    # 安装目录了，却用了 D 盘那份」，用户完全看不出程序从哪读的。
+    tmp_appdata = Path(tmp) / "appdata"
+    tmp_inst = Path(tmp) / "inst2"
+    orig_frozen, orig_appdata, orig_install = (
+        paths_mod.is_frozen,
+        paths_mod.app_data_dir,
+        paths_mod.install_dir,
+    )
+    paths_mod.is_frozen = lambda: True  # type: ignore[assignment]
+    paths_mod.app_data_dir = lambda: tmp_appdata  # type: ignore[assignment]
+    paths_mod.install_dir = lambda: tmp_inst  # type: ignore[assignment]
+    try:
+        # 非系统盘（模拟）上放一份完整模型 —— 不该被发现
+        drive_models = Path(tmp) / "fakedrive" / "Vidigest" / "models" / "large-v3"
+        drive_models.mkdir(parents=True, exist_ok=True)
+        for name in env_probe.MODEL_FILES:
+            (drive_models / name).write_bytes(b"x" * 8)
+        ignored = paths_mod.find_existing_model_dir("large-v3") is None
+
+        # 安装目录下放一份 —— 必须被发现
+        inst_models = tmp_inst / "models" / "large-v3"
+        inst_models.mkdir(parents=True, exist_ok=True)
+        for name in env_probe.MODEL_FILES:
+            (inst_models / name).write_bytes(b"x" * 8)
+        hit = paths_mod.find_existing_model_dir("large-v3") == tmp_inst / "models"
+    finally:
+        paths_mod.is_frozen = orig_frozen  # type: ignore[assignment]
+        paths_mod.app_data_dir = orig_appdata  # type: ignore[assignment]
+        paths_mod.install_dir = orig_install  # type: ignore[assignment]
+
+    judgements.append(
+        (
+            "只认数据目录 + 安装目录：非系统盘的 models 不再被识别",
+            ignored and hit,
+            f"非系统盘被忽略={ignored} 安装目录命中={hit}",
+        )
+    )
+
 
 def main() -> int:
     print("IPC 协议冒烟测试 —— docs/IPC协议规格.md §9\n")
