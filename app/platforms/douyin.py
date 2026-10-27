@@ -22,6 +22,19 @@ playwright 启动的是**独立 profile**，看不到用户 Edge/Chrome 里的�
 
 ⚠️ 即使登录了，**匿名也能下单个视频**；登录真正影响的是「作者作品列表能翻多少页」。
 实测匿名只拿到首屏约 14 条，登录后是否改善**未验证**（矩阵里如实标 ⚠️）。
+
+## 地址形态（2026-10-27 用户实测）
+
+抖音网页版**点开视频时地址栏不变**，只在 query 上加 `modal_id=<id>`。所以用户从搜索结果页
+复制出来的链接长这样：
+
+    https://www.douyin.com/search/凯心?aid=…&modal_id=7700460182866331855&type=general
+
+而 yt-dlp 的 `Douyin` 提取器只认 `/video/<id>`（前者连 `[generic]` 都认不出来，直接
+`Unsupported URL`）。归一化统一在 `app/core/urls.py::canonical_url()` 里做、并由
+`fetcher.download()` 在**分发点**执行 —— 本类不重复实现，否则加新平台时又会漏。
+本类只保留「这地址到底是什么」的判定（`douyin_url_kind`），用来在开浏览器之前就拒绝
+注定失败的任务。
 """
 
 from __future__ import annotations
@@ -31,9 +44,11 @@ import os
 from pathlib import Path
 
 from app.core import paths as paths_mod
+from app.core.errors import StageError
 from app.core.ffmpeg_locator import find_ffmpeg
 from app.core.fetcher import probe_duration_sec
 from app.core.fetcher import DownloadResult
+from app.core.urls import canonical_url, douyin_url_kind
 from app.platforms import douyin_browser as db
 from app.platforms.base import AuthorItem, AuthorPage, NotSupported
 from app.platforms.ytdlp import YtDlpProvider
@@ -59,9 +74,37 @@ class DouyinProvider(YtDlpProvider):
         """先走浏览器取流；**失败再回退** yt-dlp（有 cookie 时才有意义）。"""
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
-        url = str(getattr(task, "url", "") or "")
+        url = canonical_url(str(getattr(task, "url", "") or ""))
         if not url:
             raise NotSupported("任务没有 url")
+
+        # 先认清这条地址是什么，再决定要不要开浏览器。
+        # 开一个搜索页 / 作者主页永远抓不到播放流 —— 现在的实现要白等 6+9+12 秒
+        # 的三次重试，然后回退 yt-dlp 再失败一次，用户拿到的是
+        # `Unsupported URL: https://www.douyin.com/search/...` 这种英文原文。
+        # 形态判定是纯字符串运算，早失败 0 成本，且提示能直接照着做。
+        kind = douyin_url_kind(url)
+        if kind == "author":
+            raise StageError(
+                "download",
+                "这是一条**作者主页**链接，不是单个视频。\n"
+                "  想下这位作者的作品：用「批量」入口粘贴主页链接再勾选；\n"
+                "  想下其中一条：在抖音里点开那个视频，再复制地址栏"
+                "（地址里会带 modal_id=<一串数字>）。",
+            )
+        if kind == "note":
+            raise StageError(
+                "download",
+                "这是**图文作品**（抖音「图文 / 图集」），里面没有视频流，无法转写。\n"
+                "  请换一条视频作品。",
+            )
+        if kind == "page":
+            raise StageError(
+                "download",
+                "这条抖音链接里没有视频 id —— 看起来是搜索结果页 / 发现页 / 直播页。\n"
+                "  请先点开具体的视频，再复制地址栏：那时地址里会带 modal_id=<一串数字>，\n"
+                "  我们据此定位到单条视频。也可以直接用 App 的「分享 → 复制链接」短链。",
+            )
 
         streams = None
         reason = ""

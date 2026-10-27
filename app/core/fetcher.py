@@ -25,7 +25,7 @@ import shutil
 import subprocess
 import threading
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -34,7 +34,7 @@ from app.core.ffmpeg_locator import find_ffmpeg
 from app.core.proc import kill_process
 from app.models.config import Config
 from app.models.task import Task
-from app.core.urls import LOCAL_PLATFORM
+from app.core.urls import LOCAL_PLATFORM, UNKNOWN_PLATFORM, canonical_url, detect_platform
 
 #: 失败时保留的输出行数（PLAN.md §4.1）。
 TAIL_LINES = 20
@@ -148,6 +148,33 @@ class DownloadResult:
 # ---------------------------------------------------------------- 主流程
 
 
+def _normalized(task: Task) -> Task:
+    """返回「URL 已归一 + 平台已重判」的**副本**，供 provider 使用。
+
+    两件事必须一起做，否则修一半：
+
+    1. **URL 归一**：抖音的搜索页形态（`?modal_id=<id>`）和 `/video/<id>` 是同一段
+       视频，但 yt-dlp 只认后者（2026-10-27 用户实测，见 `urls.canonical_url`）。
+       归一放在分发点而不是各 provider 里，是为了「以后新增平台自动受益」。
+    2. **平台重判**：库里 `platform=unknown` 的老任务，靠这一步才走对 provider。
+
+    为什么用副本而不是直接改 `task`：`store.update()` 是**整行写回**（含 url 列），
+    而 url 上有 UNIQUE 约束。若库里同时存在同一视频的「搜索页形态」和
+    「/video/ 形态」两条任务，改完 url 再写回会撞约束、把任务炸掉 ——
+    而用户只是点了一下重试。副本让归一化只影响本次下载，DB 保持原样。
+    """
+    url = canonical_url(task.url)
+    platform = task.platform
+    if not platform or platform == UNKNOWN_PLATFORM:
+        hit = detect_platform(url)
+        if hit:
+            platform = hit[0]
+    if url == task.url and platform == task.platform:
+        return task
+    logging.info("任务 #%s 下载前归一：%s → %s（platform=%s）", task.id, task.url, url, platform)
+    return replace(task, url=url, platform=platform)
+
+
 def download(
     task: Task,
     cfg: Config,
@@ -171,9 +198,15 @@ def download(
 
     from app.platforms import resolve  # 延迟导入：platforms 依赖本模块
 
-    provider = resolve(task.url, task.platform)
-    logging.info("下载分发：platform=%s provider=%s", task.platform, provider.name)
-    return provider.download(task, cfg, out, on_progress, cancel_event)
+    effective = _normalized(task)
+    provider = resolve(effective.url, effective.platform)
+    logging.info(
+        "下载分发：platform=%s provider=%s url=%s",
+        effective.platform,
+        provider.name,
+        effective.url,
+    )
+    return provider.download(effective, cfg, out, on_progress, cancel_event)
 
 
 def download_ytdlp(
@@ -186,7 +219,9 @@ def download_ytdlp(
     """通用（yt-dlp）实现。**provider 的默认下载走这里，不要回调 `download()`。**"""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    return _download_remote(task, out, cfg, on_progress, cancel_event)
+    # `_normalized` 是幂等的：`download()` 分发时已经归一过，这里再调一次
+    # 只是为了让**直接调用本函数**的地方（判据、探针）拿到同样的 URL 形态。
+    return _download_remote(_normalized(task), out, cfg, on_progress, cancel_event)
 
 
 def take_local(
@@ -199,7 +234,7 @@ def take_local(
     """本地文件实现（硬链接优先）。同样给 provider 用，不回调 `download()`。"""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    return _take_local(task, out, cfg, on_progress)
+    return _take_local(_normalized(task), out, cfg, on_progress)
 
 
 def _take_local(

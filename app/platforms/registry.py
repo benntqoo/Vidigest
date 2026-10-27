@@ -16,7 +16,13 @@
 
 from __future__ import annotations
 
-from app.core.urls import LOCAL_PLATFORM, UNKNOWN_PLATFORM, detect_platform, looks_like_local_file
+from app.core.urls import (
+    LOCAL_PLATFORM,
+    UNKNOWN_PLATFORM,
+    canonical_url,
+    detect_platform,
+    looks_like_local_file,
+)
 from app.platforms.douyin import DouyinProvider
 from app.platforms.local import LocalProvider
 from app.platforms.ytdlp import YtDlpProvider
@@ -42,15 +48,23 @@ _INSTANCES: dict[str, object] = {
 
 
 def resolve(url: str, platform: str | None = None):
-    """返回该 URL 对应的 provider。**永不返回 None**（最差也是通用 yt-dlp）。"""
+    """返回该 URL 对应的 provider。**永不返回 None**（最差也是通用 yt-dlp）。
+
+    ⚠️ `platform=unknown` **不能当成确定结论**。它是「当时没认出来」的记录，
+    而识别能力会变（2026-10-27 补了主机名兜底）：一旦把 unknown 钉死，
+    0.6.4 之前入库的老任务就永远走 generic 提取器，点重试也还是那句
+    `Unsupported URL`。所以这里把它当作空值重判一次。
+    """
+    # 归一化后再判：抖音的搜索页形态和 /video/ 形态是同一段视频
+    target = canonical_url(url or "")
     name = (platform or "").strip()
-    if not name:
+    if name in ("", UNKNOWN_PLATFORM):
         # 本地路径不是 URL，正则一定匹配不到 —— 必须先判本地，
         # 否则 `C:/tmp/a.mp4` 会被当成 unknown 丢给 yt-dlp。
-        if looks_like_local_file(url or ""):
+        if looks_like_local_file(target):
             name = LOCAL_PLATFORM
         else:
-            hit = detect_platform(url or "")
+            hit = detect_platform(target)
             name = hit[0] if hit else UNKNOWN_PLATFORM
 
     provider = _INSTANCES.get(name)

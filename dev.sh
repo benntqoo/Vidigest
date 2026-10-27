@@ -204,6 +204,11 @@ cmd_check() {
   run "$PY" "$REPO/tools/dispatcher_selftest.py"
   step "下载层 —— tools/fetcher_selftest.py"
   run "$PY" "$REPO/tools/fetcher_selftest.py"
+  # 地址解析 / 归一化。2026-10-27 之前没有任何判据覆盖 `urls.py`，而它是
+  # 所有入口（CLI / RPC / 批量）的第一道关 —— 抖音搜索结果页那种形态就是在
+  # 这里判不出平台，一路滑到 yt-dlp 报 Unsupported URL。
+  step "地址解析 —— tools/urls_selftest.py"
+  run "$PY" "$REPO/tools/urls_selftest.py"
   # 下载器判据用的是本地假 HTTP 服务器（离线、几秒），必须进常规检查 ——
   # 2026-10-27 之前它不在这里，等于 11 条判据存在但从不执行。
   step "模型下载器 —— tools/model_downloader_selftest.py"
