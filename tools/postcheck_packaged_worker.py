@@ -5,6 +5,11 @@
   2. set_config 拒绝写 api_key（E_API_KEY_NOT_ALLOWED）
   3. set_config 未知 section 被丢弃并回 warnings（不写盘）
   4. verify_env 可被触发（收到 env_verify_started，随后 env_verified）
+  5. add_tasks 把「抖音搜索结果页」链接归一成 /video/<id>（0.6.5）
+
+判据 5 存在的理由：源码判据全绿 ≠ 产物里有这个功能。归一化在纯 Python 模块
+`app/core/urls.py` 里，PyInstaller 打的是**旧版本**或漏收模块时，`tools/urls_selftest.py`
+46 条照样全过，而用户装完点下载仍是那句 `Unsupported URL`。
 """
 from __future__ import annotations
 
@@ -22,6 +27,15 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKER = ROOT / "build" / "pyinstaller" / "vidigest-worker" / "vidigest-worker.exe"
 
 PY = Path(sys.executable)
+
+#: 2026-10-27 用户实测的那条（搜索结果页 + modal_id），逐字复制。
+#: 它的 `added[].url` 必须是 `…/video/<id>`，platform 必须是 douyin。
+_ACCIDENT_URL = (
+    "https://www.douyin.com/search/%E5%87%AF%E5%BF%83"
+    "?aid=96805f84-a83e-43e3-a57a-ce4331044fdf"
+    "&modal_id=7700460182866331855&type=general"
+)
+_ACCIDENT_CANON = "https://www.douyin.com/video/7700460182866331855"
 
 
 class Client:
@@ -172,6 +186,19 @@ def main() -> int:
             "get_config 下发 ai 诊断（本地优先选路可算）",
             ai_ok,
             f"active={ai.get('active')} ready={ai.get('local_ready')} server={ai.get('local_server')}",
+        )
+
+        # 1f. **URL 归一化必须在产物里生效**（0.6.5）。
+        # db 落在 `cfg.root / "state.db"`，而 cfg 在临时目录里 ⇒ 这里写库是写临时库，
+        # 不会碰到用户真实的 state.db（也不会给开着的 GUI 推事件）。
+        c.send("add_tasks", {"urls": [_ACCIDENT_URL]})
+        f = c.wait({"tasks_added", "error"}, timeout=15)
+        added = ((f or {}).get("data") or {}).get("added") or []
+        first = added[0] if added else {}
+        record(
+            "add_tasks 把抖音搜索页链接归一成 /video/<id>",
+            first.get("url") == _ACCIDENT_CANON and first.get("platform") == "douyin",
+            f"url={first.get('url')} platform={first.get('platform')}",
         )
 
         # 2. set_config 拒绝 api_key
