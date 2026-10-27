@@ -1258,23 +1258,48 @@ def check_summarizer(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
         )
     )
 
-    # ---- 未配置时：run_summarize 直接置 done、不写 summary.md ----
+    # ---- 转写稿定位 + `run_summarize` 真的把**纯文本**交出去 ----
+    #
+    # ⚠️ 这段原先是 `task.transcript_path = str(tr)`：给 dataclass 实例**动态挂**
+    # 一个生产代码里并不存在的字段。于是判据测的是「它自己造出来的那个字段」，
+    # 绿得很彻底，而真实代码读 `task.transcript_path` 直接
+    # `AttributeError: 'Task' object has no attribute 'transcript_path'`
+    # （2026-10-27 用户实测汇总时撞上，见 `Task.transcript_file` 的注释）。
+    #
+    # 现在只用**真实字段** `transcript_json`，并额外验两件事：
+    #   1. 解析出来的是同名 `.txt`（不是把 json 喂给 LLM）
+    #   2. 走一遍存储（`store.get`）仍然解析得到 —— 字段真的落进了 SQLite
     from app.core.store import Store
     from app.core import pipeline
     from app.models.task import Task, TaskStatus
 
     work = Path(tmp) / "sum-work"
     work.mkdir(parents=True, exist_ok=True)
-    tr = work / "transcript.txt"
-    tr.write_text("[00:00] 测试\n", encoding="utf-8")
+    # 与 `transcriber._write_all()` 一致：同名兄弟文件 txt / json 一起写
+    (work / "transcript.txt").write_text("[00:00] 测试\n", encoding="utf-8")
+    (work / "transcript.json").write_text('{"segments": []}\n', encoding="utf-8")
+
     store = Store(Path(tmp) / "sum-state.db")
     try:
         task, _ = store.add(
             Task(url="https://example.com/x", platform="unknown", title="t", out_dir=str(work))
         )
-        task.transcript_path = str(tr)
-        store.set_status(task, TaskStatus.FRAMED)
-        pipeline.run_summarize(task, off, store)
+        task.transcript_json = str(work / "transcript.json")
+        store.update(task)
+
+        reloaded = store.get(task.id)
+        resolved = reloaded.transcript_file if reloaded is not None else None
+        judgements.append(
+            (
+                "转写稿定位：transcript_json(.json) → 同名 .txt，且读盘后仍在",
+                resolved == (work / "transcript.txt"),
+                f"解析结果={resolved}",
+            )
+        )
+
+        # 未配置时：置 done、不写 summary.md（原来是这条，改成用真实字段跑）
+        store.set_status(reloaded, TaskStatus.FRAMED)
+        pipeline.run_summarize(reloaded, off, store)
         status = store.get(task.id).status
         wrote = (work / "summary.md").exists()
         judgements.append(
@@ -1284,8 +1309,83 @@ def check_summarizer(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
                 f"status={status} 写了文件={wrote}",
             )
         )
+
+        # 配了云后端时：**交给 summarizer 的必须是 .txt**。
+        # 用桩替掉真实调用（不联网），只记录它收到的路径。
+        handed: list[Path] = []
+        real_summarize = S.summarize
+
+        def _stub(path, out_dir, cfg, **_kw):  # noqa: ANN001 — 只为记录实参
+            handed.append(Path(path))
+            return None
+
+        _os.environ["VIDIGEST_SMOKE_KEY"] = "sk-x"
+        try:
+            sum_cfg = Config.from_dict(
+                {
+                    "summarize": {"enabled": True, "api_key_env": "VIDIGEST_SMOKE_KEY"},
+                    "vision": {"enabled": False},
+                },
+                root=Path(tmp),
+            )
+            S.summarize = _stub
+            store.set_status(reloaded, TaskStatus.FRAMED)
+            pipeline.run_summarize(reloaded, sum_cfg, store)
+        finally:
+            S.summarize = real_summarize
+            _os.environ.pop("VIDIGEST_SMOKE_KEY", None)
+
+        judgements.append(
+            (
+                "汇总入参：交给 summarizer 的是 .txt 全文，不是 .json",
+                handed == [work / "transcript.txt"],
+                f"收到={[str(p) for p in handed]}",
+            )
+        )
     finally:
         store.close()
+
+
+def check_task_attribute_usage(judgements: list[tuple[str, bool, str]]) -> None:
+    """静态扫 `app/` 里所有 `task.<attr>`，确认属性真的定义在 `Task` 上。
+
+    动机（2026-10-27）：`run_summarize()` 读 `task.transcript_path` —— 该字段
+    从 0.5.0 起就不存在。运行时才炸，而且只在「汇总」这条分支炸，前面三个阶段
+    全绿。判据当时也用同名字段手建了一个，于是两边一起错、一起绿。
+
+    属性名写错属于**一次写错、长期潜伏**的类型，静态扫一遍是最便宜的守门；
+    它只认变量名恰好叫 `task` 的访问（本仓库里 `Task` 实例的惯例名），
+    因此误报率极低 —— 真有别的对象叫 `task`，那本身也该改名。
+    """
+    import ast
+
+    from app.models.task import Task
+
+    known = set(Task.__dataclass_fields__) | {n for n in dir(Task) if not n.startswith("_")}
+    root = Path(__file__).resolve().parents[1] / "app"
+    hits: list[str] = []
+    bad: list[str] = []
+
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute):
+                continue
+            owner = node.value
+            if not (isinstance(owner, ast.Name) and owner.id == "task"):
+                continue
+            rel = path.relative_to(root).as_posix()
+            hits.append(f"{rel}:{node.lineno} task.{node.attr}")
+            if node.attr not in known:
+                bad.append(f"{rel}:{node.lineno} task.{node.attr}")
+
+    judgements.append(
+        (
+            "静态扫描：app/ 里 task.<attr> 全部存在于 Task 模型",
+            bool(hits) and not bad,
+            f"扫到 {len(hits)} 处，未定义={bad or '无'}",
+        )
+    )
 
 
 def check_ai_backend(tmp: str, judgements: list[tuple[str, bool, str]]) -> None:
@@ -1423,6 +1523,7 @@ def main() -> int:
     check_platform_registry(host.judgements)
     check_download_dispatch(tmp, host.judgements)
     check_summarizer(tmp, host.judgements)
+    check_task_attribute_usage(host.judgements)
     check_asset_packs(tmp, host.judgements)
     check_ai_backend(tmp, host.judgements)
     check_local_ai_autoconfig(tmp, host.judgements)

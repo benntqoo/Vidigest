@@ -294,7 +294,7 @@ ffmpeg 9.0 移除了 `-vsync`，本项目已改用 `-fps_mode passthrough`；报
 
 | 层 | 命令 | 判据数 |
 |---|---|---|
-| IPC 协议 | `python tools/rpc_smoke.py` | 70 |
+| IPC 协议 | `python tools/rpc_smoke.py` | 73 |
 | 调度语义 | `python tools/dispatcher_selftest.py` | 66 |
 | 下载层 | `python tools/fetcher_selftest.py` | 7 |
 | 模型下载器 | `python tools/model_downloader_selftest.py` | 11 |

@@ -297,8 +297,18 @@ def run_summarize(
     两步都失败也要置 `done` —— 转写稿本身已经有价值，AI 能力不该让它变红。
     跳过原因写日志，用户能查到（这是本项目反复踩过的坑：静默跳过等于看起来没干活）。
     """
-    if not task.transcript_path:
-        logging.warning("任务 %s 无转写稿，跳过汇总", task.id)
+    transcript = task.transcript_file
+    if transcript is None:
+        # 两种情况分开说：**没有转写阶段** vs **有转写索引但文件被删了**。
+        # 合成一句「无转写稿，跳过汇总」的话，后一种就变成了无法追查的静默跳过。
+        if task.transcript_json:
+            logging.warning(
+                "任务 %s 有转写索引但找不到对应的 .txt（%s），跳过汇总",
+                task.id,
+                task.transcript_json,
+            )
+        else:
+            logging.warning("任务 %s 无转写稿，跳过汇总", task.id)
         _set(task, store, TaskStatus.DONE, on_stage)
         return
 
@@ -331,7 +341,7 @@ def run_summarize(
                     )
 
             out = summary_mod.summarize(
-                Path(task.transcript_path),
+                transcript,
                 out_dir,
                 cfg,
                 title=task.title or "",

@@ -132,6 +132,37 @@ class Task:
     def audio_file(self) -> Path | None:
         return Path(self.audio_path) if self.audio_path else None
 
+    @property
+    def transcript_file(self) -> Path | None:
+        """转写稿的**纯文本**路径；没有可用转写稿时为 `None`。
+
+        两个必须说清楚的地方：
+
+        1. `transcript_json` 这个字段名是 0.5.0 留下的，存的是**路径**不是内容，
+           且指向 `.json`（分段 + 时间戳）。而汇总只吃纯文本。两者是同目录同名的
+           兄弟文件 —— `transcriber._write_all()` 一次写出 `txt / srt / json`，
+           所以这里把后缀换成 `.txt`。**直接把 json 喂给 LLM 是错的**：会烧掉
+           一大截 token 去读时间戳和 JSON 标点。
+
+        2. 2026-10-27 修：`pipeline.run_summarize()` 原来读的是
+           `task.transcript_path` —— **这个字段从来不存在**（0.5.0 起就写错）。
+           之所以没早暴露：抽帧阶段当时直接置 `done`，汇总根本没进 GUI 的链路，
+           只有 `run_one()`（CLI / 判据）会走到；0.6.3 把汇总接进调度器之后，
+           每条任务都会在汇总阶段抛 `AttributeError: 'Task' object has no
+           attribute 'transcript_path'`。
+
+           为什么判据没拦住：`tools/rpc_smoke.py` 当时手写了
+           `task.transcript_path = str(tr)` —— Python 允许给 dataclass 实例
+           动态挂属性，于是判据「自己造出了它正在测的那个字段」，
+           绿得很彻底，而真实代码路径是崩的。
+        """
+        raw = self.transcript_json
+        if not raw:
+            return None
+        path = Path(raw)
+        text = path.with_suffix(".txt") if path.suffix.lower() == ".json" else path
+        return text if text.is_file() else None
+
     # ---- 序列化 ----
 
     def to_row(self) -> dict:
